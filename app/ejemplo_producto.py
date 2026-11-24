@@ -37,26 +37,127 @@ RAIZ = APP.parent                                # raíz del repositorio
 # ---------------------------------------------------------------------------
 # 1. TU MODELO VA AQUÍ
 # ---------------------------------------------------------------------------
-def predecir(Xw, static):
+def predecir(Xw, static, times=None):
     """
     Entrada:
       Xw     : (N, 3, 17, 13, 4) ventanas [t-2, t-1, t] del GFS, en unidades físicas
                (RH %, T K, U m/s, V m/s). Fila 0 = norte.
       static : contenido de static.npz (dem, wrf_lats, wrf_lons, ...)
+      times  : (N,) array de strings 'YYYYMMDDHH' en UTC
     Salida:
       Y      : (N, 70, 35, 4) mapas a 3 km, mismas unidades. FILA 0 = SUR (como en Kaggle).
-
-    Reemplaza este cuerpo por tu modelo. Ejemplo con PyTorch:
-        modelo = MiRed(); modelo.load_state_dict(torch.load("models/mi_modelo.pt"))
-        Xn = normalizar(Xw)            # igual que en tu entrenamiento
-        Y = desnormalizar(modelo(Xn))  # (N, 70, 35, 4)
     """
-    # --- MODELO DE RELLENO (no usar en la entrega) ---
-    Xt = Xw[:, -1]                                        # solo la hora t
+    import sys
+    import torch
+
+    pesos_path = RAIZ / "models" / "modelo.pt"
+    stats_path = RAIZ / "models" / "norm_stats.npz"
+
+    if pesos_path.exists() and stats_path.exists():
+        sys.path.insert(0, str(RAIZ / "kaggle_pipeline" / "src"))
+        from train import (
+            StarterCNN,
+            TopoResUNet,
+            build_sampling_grid,
+            build_topographic_features,
+            extract_hour_utc,
+        )
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        stats = np.load(stats_path)
+        mu_x = stats["mu_x"]
+        sd_x = stats["sd_x"]
+        clim_trn = stats["clim_trn"]
+        anom_sd = stats["anom_sd"]
+        arch = str(stats["arch"])
+        width = int(stats["width"])
+
+        grid_t = build_sampling_grid(static, device)
+        dem = static["dem"].astype(np.float32)
+
+        if arch == "starter_cnn":
+            dem_norm_t = torch.tensor((dem - dem.mean()) / dem.std(), dtype=torch.float32, device=device)[None, None]
+            model = StarterCNN(grid=grid_t, dem_norm=dem_norm_t, w=64).to(device)
+        elif arch in ("physics_unet_v3", "ensemble_3fam_v6"):
+            from train_v3 import (
+                PhysicsUNet,
+                CENTERED_LAGS,
+                build_centered_windows_and_daily_mean,
+                compute_dewpoint_c,
+                smooth_2d,
+            )
+
+            topo_np = build_topographic_features(dem, static["wrf_lats"], static["wrf_lons"])
+            topo_t = torch.tensor(topo_np, dtype=torch.float32, device=device)
+            dem_smooth = smooth_2d(dem, k=9)
+            lapse_delta = (-0.0065 * (dem - dem_smooth)) / float(sd_x[1])
+            lapse_delta_t = torch.tensor(lapse_delta, dtype=torch.float32, device=device)
+
+            if arch == "ensemble_3fam_v6":
+                from build_ensemble import EnsembleDownscaler
+
+                bw = stats["blend_weights"]
+                model = EnsembleDownscaler(
+                    grid=grid_t,
+                    topo_features=topo_t,
+                    lapse_delta_norm=lapse_delta_t,
+                    unet_w=64,
+                    convnext_w=80,
+                    fno_w=48,
+                    blend_weights=bw,
+                ).to(device)
+            else:
+                model = PhysicsUNet(
+                    grid=grid_t,
+                    topo_features=topo_t,
+                    lapse_delta_norm=lapse_delta_t,
+                    w=width,
+                    dropout=0.0,
+                ).to(device)
+        else:
+            topo_np = build_topographic_features(dem, static["wrf_lats"], static["wrf_lons"])
+            topo_t = torch.tensor(topo_np, dtype=torch.float32, device=device)
+            model = TopoResUNet(grid=grid_t, topo_features=topo_t, w=width).to(device)
+
+        model.load_state_dict(torch.load(pesos_path, map_location=device, weights_only=True))
+        model.eval()
+
+        if times is not None:
+            h_utc = extract_hour_utc(times)
+        else:
+            h_utc = np.zeros(len(Xw), dtype=np.int64)
+
+        CLIM_T = torch.tensor(clim_trn, dtype=torch.float32, device=device)
+        ASD_T = torch.tensor(anom_sd, dtype=torch.float32, device=device)
+
+        with torch.no_grad():
+            hb = torch.tensor(h_utc, dtype=torch.long, device=device)
+            if arch in ("physics_unet_v3", "ensemble_3fam_v6"):
+                # Reconstruir secuencia horaria X desde el último paso de cada ventana Xw[:, -1]
+                X_seq = Xw[:, -1]
+                t_seq = times if times is not None else np.array([f"20260101{i%24:02d}" for i in range(len(X_seq))])
+                W_c, M24 = build_centered_windows_and_daily_mean(X_seq, t_seq, CENTERED_LAGS)
+                Td = compute_dewpoint_c(X_seq[..., 1], X_seq[..., 0])[:, None, :, :]
+                mu_td = float(stats["mu_td"])
+                sd_td = float(stats["sd_td"])
+                xb = torch.tensor(((W_c - mu_x) / sd_x).astype(np.float32), dtype=torch.float32, device=device)
+                mb = torch.tensor(((M24 - mu_x) / sd_x).astype(np.float32), dtype=torch.float32, device=device)
+                tb = torch.tensor(((Td - mu_td) / sd_td).astype(np.float32), dtype=torch.float32, device=device)
+                pred_anom = model(xb, mb, tb, hb.float())
+            else:
+                Wn = ((Xw - mu_x) / sd_x).astype(np.float32)
+                xb = torch.tensor(Wn, dtype=torch.float32, device=device)
+                pred_anom = model(xb, hb.float())
+            Y = (CLIM_T[hb] + pred_anom * ASD_T).cpu().numpy()
+            Y[..., 0] = np.clip(Y[..., 0], 0.0, 100.0)
+        return Y.astype(np.float32)
+
+    # Fallback si aún no se ha corrido train.py
+    Xt = Xw[:, -1]
     Y = _interpolar_a_wrf(Xt, static["wrf_lats"], static["wrf_lons"])
     dem = static["dem"].astype(np.float32)
-    dem_suave = _suavizar(dem, k=9)                       # relieve "visto" a baja resolución
-    Y[..., 1] -= 0.0065 * (dem - dem_suave)               # T baja ~6.5 °C por km extra de altura
+    dem_suave = _suavizar(dem, k=9)
+    Y[..., 1] -= 0.0065 * (dem - dem_suave)
     return Y
 
 
@@ -140,7 +241,7 @@ def main():
     else:
         X, times = get_gfs_forecast(forecast_hours=a.horas, cache_path=str(APP / "gfs_cache.npz"))
     Xw, times = make_windows(X, times)
-    Y = predecir(Xw, static)
+    Y = predecir(Xw, static, times=times)
     assert Y.shape[1:] == (70, 35, 4), f"predecir() debe devolver (N, 70, 35, 4), devolvió {Y.shape}"
 
     tmin, hora_min, helada = alerta_heladas(Y, times)

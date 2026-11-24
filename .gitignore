@@ -1,20 +1,48 @@
-# Data de la competencia (se baja de Kaggle, no se sube a GitHub)
-data/*
-!data/README.md
-*.npz
-*.csv
+# Datasets oficiales de Kaggle y PDFs de bases (no se suben al repositorio público)
+data/*.npz
+data/*.csv
+data/*.zip
+*.pdf
+app/gfs_cache.npz
+app/salidas/
+submission.csv
+kaggle_pipeline/data/raw/*
+!kaggle_pipeline/data/raw/.gitkeep
+kaggle_pipeline/data/processed/*
+!kaggle_pipeline/data/processed/.gitkeep
 
-# Caché del GFS y salidas del producto
-gfs_cache.npz
-salidas/
+# Artefactos pesados de experimentos (excepto el registro CSV y config.json de experimentos)
+kaggle_pipeline/experiments/*/*.npy
+kaggle_pipeline/experiments/*/*.csv
+kaggle_pipeline/experiments/*/*.joblib
+kaggle_pipeline/experiments/*/*.pt
+kaggle_pipeline/experiments/*/*.cbm
+product_app/backend/models/*.joblib
 
-# Python
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
+# Entornos virtuales y cachés de Python
 .venv/
 venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.catboost_info/
 
-# Claves y entorno
-.env
+# Frontend Node/Next.js
+node_modules/
+.next/
+out/
+
+# Configuración local de agentes IA, notas internas y logs de experimentos (no son parte del entregable público)
+AGENTS.md
+.agents/
+docs/
+kaggle_pipeline/data/
+kaggle_pipeline/experiments/
+kaggle_pipeline/src/cv_strategy.py
+
+# Credenciales locales (Jamás subir tokens de Kaggle ni .env)
 kaggle.json
+access_token
+.kaggle/
+.env
+.env.local
