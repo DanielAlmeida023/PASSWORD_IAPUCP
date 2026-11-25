@@ -1,222 +1,375 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-
-interface HourlyPoint {
-  time_utc: string;
-  time_lima: string;
-  temp_c: number;
-  rh_pct: number;
-  wind_ms: number;
-  u_ms: number;
-  v_ms: number;
-}
-
-interface DownscaleResponse {
-  timestamp_utc: string;
-  periodo_lima: string;
-  model_info: { exp_id: string; val_skill_score: number };
-  zona: {
-    id: string;
-    nombre: string;
-    perfil: string;
-    lat_real_3km: number;
-    lon_real_3km: number;
-    elevacion_m: number;
-  };
-  kpis_zona: {
-    tmin_c: number;
-    tmax_c: number;
-    hora_tmin_lima: string;
-    viento_max_ms: number;
-    rh_media_pct: number;
-  };
-  resumen_cordillera: {
-    total_celdas_3km: number;
-    pct_territorio_helada: number;
-    tmin_dominio_c: number;
-    tmax_dominio_c: number;
-    viento_max_dominio_ms: number;
-  };
-  actionable_status: string;
-  recommendation: string;
-  serie_horaria_3km: HourlyPoint[];
-}
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import CordilleraMap3D from "../components/CordilleraMap3D";
+import TacticalHUD from "../components/TacticalHUD";
+import TimelineScrubber from "../components/TimelineScrubber";
+import DecisionSidebar from "../components/DecisionSidebar";
+import type {
+  BriefingResponse,
+  DrawMode,
+  FireHotspot,
+  FirePlumeResponse,
+  FiresFirmsResponse,
+  GeometryAnalysisResponse,
+  GridForecastResponse,
+  OpticMode,
+} from "../types/inti3k";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-const ZONAS = [
-  { id: "huaraz_valle", label: "Huaraz · Valle del Santa (Agricultura & Ciudad)" },
-  { id: "caraz_cultivos", label: "Caraz · Campos Agrícolas (Agroexportación)" },
-  { id: "huascaran_ruta", label: "Nevado Huascarán · Campo Base (Andinismo)" },
-  { id: "pastoruri_turismo", label: "Glaciar Pastoruri · Ruta Turística (Turismo)" },
-  { id: "chacas_vertiente", label: "Chacas · Vertiente Oriental (Gestión Municipal)" },
-];
+export default function Inti3kCommandCenter() {
+  const [gridData, setGridData] = useState<GridForecastResponse | null>(null);
+  const [infrastructure, setInfrastructure] = useState<GeoJSON.FeatureCollection | null>(null);
+  const [hotspots, setHotspots] = useState<FireHotspot[]>([]);
+  const [firesBadge, setFiresBadge] = useState<string>("");
+  const [firePlume, setFirePlume] = useState<FirePlumeResponse | null>(null);
 
-export default function CordilleraDashboard() {
-  const [zonaId, setZonaId] = useState("huaraz_valle");
+  const [hourIdx, setHourIdx] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playSpeed, setPlaySpeed] = useState(1);
   const [forecastHours, setForecastHours] = useState(24);
-  const [loading, setLoading] = useState(false);
-  const [data, setData] = useState<DownscaleResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [historicalDate, setHistoricalDate] = useState("");
 
-  const fetchDownscale = async (selectedZona = zonaId, hours = forecastHours) => {
-    setLoading(true);
-    setError(null);
+  const [opticMode, setOpticMode] = useState<OpticMode>("flir");
+  const [compareGfs, setCompareGfs] = useState(false);
+  const [drawMode, setDrawMode] = useState<DrawMode>("pin");
+  const [draftCoords, setDraftCoords] = useState<number[][]>([[-9.528, -77.528]]);
+  const [hudVisible, setHudVisible] = useState(true);
+
+  const [analysis, setAnalysis] = useState<GeometryAnalysisResponse | null>(null);
+  const [briefing, setBriefing] = useState<BriefingResponse | null>(null);
+  const [loadingAnalysis, setLoadingAnalysis] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+
+  const [flyToTarget, setFlyToTarget] = useState<{ lat: number; lon: number; zoom?: number; seq: number } | null>(
+    null
+  );
+  const [resetSeq, setResetSeq] = useState(0);
+
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState<string | null>(null);
+  const recognitionRef = useRef<any>(null);
+
+  const runGeometryAnalysis = useCallback(
+    async (
+      geomType: "pin" | "polygon" | "route",
+      coords: number[][],
+      label: string,
+      hoursOverride?: number,
+      histDateOverride?: string
+    ) => {
+      setLoadingAnalysis(true);
+      try {
+        const hrs = hoursOverride ?? forecastHours;
+        const hDate = histDateOverride !== undefined ? histDateOverride : historicalDate;
+        const res = await fetch(`${API_BASE}/api/analyze-geometry`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            geometry_type: geomType,
+            coordinates: coords,
+            label,
+            forecast_hours: hrs,
+            start_date: hDate || null,
+            end_date: hDate || null,
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: GeometryAnalysisResponse = await res.json();
+        setAnalysis(data);
+
+        // Generar boletín bilingüe Español / Quechua Áncash
+        const bRes = await fetch(`${API_BASE}/api/briefing`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            label: data.label,
+            geometry_type: data.geometry_type,
+            elevacion_min_m: data.elevacion_min_m,
+            elevacion_max_m: data.elevacion_max_m,
+            tmin_c: data.kpis.tmin_c,
+            tmax_c: data.kpis.tmax_c,
+            hora_tmin_lima: data.kpis.hora_tmin_lima,
+            viento_max_ms: data.kpis.viento_max_ms,
+            wind_chill_min_c: data.kpis.wind_chill_min_c,
+            rh_min_pct: data.kpis.rh_min_pct,
+            fire_risk_max: data.kpis.fire_risk_max,
+            actionable_status: data.actionable_status,
+            area_km2: data.area_km2,
+          }),
+        });
+        if (bRes.ok) {
+          setBriefing(await bRes.json());
+        }
+      } catch (err: any) {
+        setApiError(err.message || "Error analizando geometría");
+      } finally {
+        setLoadingAnalysis(false);
+      }
+    },
+    [forecastHours, historicalDate]
+  );
+
+  const loadGridAndContext = useCallback(
+    async (hrs: number, histDate: string) => {
+      setApiError(null);
+      try {
+        const params = new URLSearchParams({ hours: String(hrs) });
+        if (histDate) {
+          params.set("start_date", histDate);
+          params.set("end_date", histDate);
+        }
+        const [gridRes, infraRes, firesRes] = await Promise.all([
+          fetch(`${API_BASE}/api/grid-forecast?${params.toString()}`),
+          fetch(`${API_BASE}/api/infrastructure`),
+          fetch(`${API_BASE}/api/fires-firms`),
+        ]);
+        if (!gridRes.ok) throw new Error("No se pudo cargar /api/grid-forecast. Verifica el backend en :8000.");
+        const gridJson: GridForecastResponse = await gridRes.json();
+        setGridData(gridJson);
+        setHourIdx(0);
+
+        if (infraRes.ok) setInfrastructure(await infraRes.json());
+        if (firesRes.ok) {
+          const fj: FiresFirmsResponse = await firesRes.json();
+          setHotspots(fj.hotspots);
+          setFiresBadge(fj.badge);
+        }
+      } catch (err: any) {
+        setApiError(err.message || "Error conectando con el backend INTI-3K.");
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    loadGridAndContext(forecastHours, historicalDate);
+    runGeometryAnalysis("pin", [[-9.528, -77.528]], "Huaraz · COER Áncash", forecastHours, historicalDate);
+  }, [forecastHours, historicalDate, loadGridAndContext, runGeometryAnalysis]);
+
+  // Reproductor temporal automático
+  useEffect(() => {
+    if (!isPlaying || !gridData?.timeline.length) return;
+    const intervalMs = Math.max(180, 900 / playSpeed);
+    const id = setInterval(() => {
+      setHourIdx((prev) => (prev + 1) % gridData.timeline.length);
+    }, intervalMs);
+    return () => clearInterval(id);
+  }, [isPlaying, playSpeed, gridData]);
+
+  // Atajos de teclado de la sala de operaciones
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+
+      if (e.key === "1") setOpticMode("satellite");
+      else if (e.key === "2") setOpticMode("flir");
+      else if (e.key === "3") setOpticMode("wind");
+      else if (e.key === "4") setOpticMode("risk");
+      else if (e.key.toLowerCase() === "g") setCompareGfs((v) => !v);
+      else if (e.key.toLowerCase() === "h") setHudVisible((v) => !v);
+      else if (e.key.toLowerCase() === "r" || e.key === "Escape") {
+        setResetSeq((s) => s + 1);
+      } else if (e.code === "Space") {
+        e.preventDefault();
+        setIsPlaying((p) => !p);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  const handleSimulateFire = async (lat: number, lon: number, label?: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/downscale-live`, {
+      const res = await fetch(`${API_BASE}/api/fire-plume`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          zona_id: selectedZona,
-          forecast_hours: hours,
-          umbral_helada_c: 0.0,
-          umbral_viento_ms: 10.0,
+          lat,
+          lon,
+          hour_idx: hourIdx,
+          duration_hours: 8,
+          forecast_hours: forecastHours,
+          start_date: historicalDate || null,
+          end_date: historicalDate || null,
         }),
       });
-      if (!res.ok) {
-        throw new Error(`Error ${res.status}: Verifica que el backend FastAPI esté corriendo en el puerto 8000.`);
+      if (res.ok) {
+        setFirePlume(await res.json());
+        setOpticMode("risk");
+        setFlyToTarget({ lat, lon, zoom: 10.4, seq: Date.now() });
+        runGeometryAnalysis("pin", [[lat, lon]], label || `Foco (${lat.toFixed(2)}, ${lon.toFixed(2)})`);
       }
-      const json: DownscaleResponse = await res.json();
-      setData(json);
-    } catch (err: any) {
-      setError(err.message || "Error al conectar con la API de Downscaling.");
-    } finally {
-      setLoading(false);
+    } catch {
+      // ignore
     }
   };
 
-  useEffect(() => {
-    fetchDownscale(zonaId, forecastHours);
-  }, []);
+  const handleMapClick = (lat: number, lon: number) => {
+    if (drawMode === "fire") {
+      handleSimulateFire(lat, lon);
+      return;
+    }
+    if (drawMode === "pin" || drawMode === "none") {
+      const coords = [[lat, lon]];
+      setDraftCoords(coords);
+      runGeometryAnalysis("pin", coords, `Punto 3 km (${lat.toFixed(2)}, ${lon.toFixed(2)})`);
+      return;
+    }
+    setDraftCoords((prev) => [...prev, [lat, lon]]);
+  };
+
+  const handleToggleVoice = () => {
+    if (typeof window === "undefined") return;
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      setVoiceTranscript("Tu navegador no soporta Web Speech API (prueba Chrome/Edge).");
+      setTimeout(() => setVoiceTranscript(null), 3500);
+      return;
+    }
+    if (voiceListening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setVoiceListening(false);
+      return;
+    }
+
+    const rec = new SpeechRec();
+    rec.lang = "es-PE";
+    rec.interimResults = false;
+    rec.onresult = (ev: any) => {
+      const cmd: string = ev.results?.[0]?.[0]?.transcript?.toLowerCase() || "";
+      setVoiceTranscript(cmd);
+      setTimeout(() => setVoiceTranscript(null), 4000);
+
+      if (cmd.includes("huaraz")) {
+        setFlyToTarget({ lat: -9.528, lon: -77.528, zoom: 10.6, seq: Date.now() });
+        runGeometryAnalysis("pin", [[-9.528, -77.528]], "Huaraz · COER Áncash");
+      } else if (cmd.includes("caraz")) {
+        setFlyToTarget({ lat: -9.047, lon: -77.81, zoom: 10.8, seq: Date.now() });
+        runGeometryAnalysis("pin", [[-9.047, -77.81]], "Caraz · Valle Agroexportador");
+      } else if (cmd.includes("huascar")) {
+        setFlyToTarget({ lat: -9.122, lon: -77.604, zoom: 11.2, seq: Date.now() });
+        runGeometryAnalysis("pin", [[-9.122, -77.604]], "Nevado Huascarán");
+      } else if (cmd.includes("pastoruri")) {
+        setFlyToTarget({ lat: -9.927, lon: -77.193, zoom: 11.0, seq: Date.now() });
+        runGeometryAnalysis("pin", [[-9.927, -77.193]], "Glaciar Pastoruri");
+      } else if (cmd.includes("térmico") || cmd.includes("flir") || cmd.includes("helada")) {
+        setOpticMode("flir");
+      } else if (cmd.includes("viento")) {
+        setOpticMode("wind");
+      } else if (cmd.includes("riesgo") || cmd.includes("incendio")) {
+        setOpticMode("risk");
+      } else if (cmd.includes("satélite")) {
+        setOpticMode("satellite");
+      } else if (cmd.includes("comparar")) {
+        setCompareGfs((v) => !v);
+      } else if (cmd.includes("reproducir") || cmd.includes("pausa")) {
+        setIsPlaying((p) => !p);
+      } else if (cmd.includes("reiniciar") || cmd.includes("reset")) {
+        setResetSeq((s) => s + 1);
+      }
+    };
+    rec.onerror = () => setVoiceListening(false);
+    rec.onend = () => setVoiceListening(false);
+    recognitionRef.current = rec;
+    setVoiceListening(true);
+    rec.start();
+  };
 
   return (
-    <main style={{ minHeight: "100vh", backgroundColor: "#070b14", color: "#f1f5f9", padding: "2rem", fontFamily: "system-ui, sans-serif" }}>
-      <div style={{ maxWidth: "1180px", margin: "0 auto" }}>
-        <header style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: "1rem", borderBottom: "1px solid #1e293b", paddingBottom: "1.25rem", marginBottom: "1.75rem" }}>
-          <div>
-            <span style={{ fontSize: "0.75rem", letterSpacing: "0.1em", textTransform: "uppercase", color: "#38bdf8", fontWeight: 700 }}>
-              Hackathon IA PUCP 2026 · Proyecto AIRE-ANDINO (GFS 27 km → Modelo IA 3 km)
-            </span>
-            <h1 style={{ fontSize: "1.85rem", fontWeight: 800, margin: "0.25rem 0 0 0" }}>
-              Inteligencia Microclimática 3 km — Cordillera Blanca
-            </h1>
-          </div>
+    <main className="relative h-screen w-screen overflow-hidden bg-[#050911]">
+      <CordilleraMap3D
+        gridData={gridData}
+        hourIdx={hourIdx}
+        opticMode={opticMode}
+        compareGfs={compareGfs}
+        drawMode={drawMode}
+        draftCoords={draftCoords}
+        infrastructure={infrastructure}
+        hotspots={hotspots}
+        firePlume={firePlume}
+        flyToTarget={flyToTarget}
+        resetSeq={resetSeq}
+        onMapClick={handleMapClick}
+        onSelectHotspot={(spot) => handleSimulateFire(spot.lat, spot.lon, spot.nombre)}
+        onSelectInfrastructure={(nombre, lat, lon) => {
+          setDraftCoords([[lat, lon]]);
+          runGeometryAnalysis("pin", [[lat, lon]], nombre);
+        }}
+      />
 
-          <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
-            <select
-              value={zonaId}
-              onChange={(e) => {
-                setZonaId(e.target.value);
-                fetchDownscale(e.target.value, forecastHours);
-              }}
-              style={{ backgroundColor: "#111827", border: "1px solid #334155", color: "#f8fafc", padding: "0.55rem 0.9rem", borderRadius: "0.5rem" }}
-            >
-              {ZONAS.map((z) => (
-                <option key={z.id} value={z.id}>
-                  {z.label}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={() => fetchDownscale(zonaId, forecastHours)}
-              disabled={loading}
-              style={{ backgroundColor: "#0284c7", color: "#fff", fontWeight: 600, padding: "0.55rem 1.2rem", borderRadius: "0.5rem", border: "none", cursor: "pointer" }}
-            >
-              {loading ? "Ejecutando Modelo 3 km..." : "Actualizar Pronóstico GFS Vivo"}
-            </button>
-          </div>
-        </header>
+      <TacticalHUD
+        gridData={gridData}
+        opticMode={opticMode}
+        compareGfs={compareGfs}
+        drawMode={drawMode}
+        draftCount={draftCoords.length}
+        hudVisible={hudVisible}
+        voiceListening={voiceListening}
+        voiceTranscript={voiceTranscript}
+        onChangeOptic={setOpticMode}
+        onToggleCompareGfs={() => setCompareGfs((v) => !v)}
+        onChangeDrawMode={(m) => {
+          setDrawMode(m);
+          if (m === "polygon" || m === "route") setDraftCoords([]);
+        }}
+        onExecuteDraft={() => {
+          if (drawMode === "polygon" && draftCoords.length >= 3) {
+            runGeometryAnalysis("polygon", draftCoords, "Polígono Agrícola / Distrito");
+          } else if (drawMode === "route" && draftCoords.length >= 2) {
+            runGeometryAnalysis("route", draftCoords, "Ruta Cordillera Blanca");
+          }
+        }}
+        onClearDraft={() => {
+          setDraftCoords([]);
+          setFirePlume(null);
+        }}
+        onToggleHud={() => setHudVisible((v) => !v)}
+        onResetView={() => setResetSeq((s) => s + 1)}
+        onToggleVoice={handleToggleVoice}
+      />
 
-        {error && (
-          <div style={{ backgroundColor: "#450a0a", border: "1px solid #dc2626", padding: "1rem", borderRadius: "0.5rem", marginBottom: "1.5rem" }}>
-            {error}
-          </div>
-        )}
+      {apiError && (
+        <div className="pointer-events-auto absolute top-24 left-1/2 z-30 -translate-x-1/2 rounded-lg border border-rose-500 bg-rose-950/95 px-4 py-2 text-xs text-rose-200 shadow-xl">
+          {apiError}
+        </div>
+      )}
 
-        {data && (
-          <>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "1.25rem", marginBottom: "1.5rem" }}>
-              <div style={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", borderRadius: "0.75rem", padding: "1.25rem" }}>
-                <div style={{ fontSize: "0.78rem", color: "#94a3b8", textTransform: "uppercase" }}>Decisión Operativa ({data.zona.perfil})</div>
-                <div
-                  style={{
-                    fontSize: "1.65rem",
-                    fontWeight: 800,
-                    margin: "0.5rem 0",
-                    color: data.actionable_status === "ALERTA CRÍTICA" ? "#f87171" : data.actionable_status === "PRECAUCIÓN OPERATIVA" ? "#fbbf24" : "#34d399",
-                  }}
-                >
-                  {data.actionable_status}
-                </div>
-                <p style={{ fontSize: "0.9rem", color: "#cbd5e1", lineHeight: 1.45, margin: 0 }}>{data.recommendation}</p>
-              </div>
+      <DecisionSidebar
+        analysis={analysis}
+        briefing={briefing}
+        hotspots={hotspots}
+        firesBadge={firesBadge}
+        firePlume={firePlume}
+        hudVisible={hudVisible}
+        loadingAnalysis={loadingAnalysis}
+        onSelectHotspot={(spot) => handleSimulateFire(spot.lat, spot.lon, spot.nombre)}
+        onFlyToPreset={(nombre, lat, lon) => {
+          setFlyToTarget({ lat, lon, zoom: 10.6, seq: Date.now() });
+          setDraftCoords([[lat, lon]]);
+          runGeometryAnalysis("pin", [[lat, lon]], nombre);
+        }}
+      />
 
-              <div style={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", borderRadius: "0.75rem", padding: "1.25rem" }}>
-                <div style={{ fontSize: "0.78rem", color: "#94a3b8", textTransform: "uppercase" }}>
-                  Celda 3 km · {data.zona.nombre}
-                </div>
-                <div style={{ fontSize: "1.5rem", fontWeight: 700, margin: "0.4rem 0" }}>
-                  {data.kpis_zona.tmin_c} °C <span style={{ fontSize: "0.95rem", color: "#64748b" }}>/ máx {data.kpis_zona.tmax_c} °C</span>
-                </div>
-                <div style={{ fontSize: "0.85rem", color: "#94a3b8" }}>
-                  Elevación DEM: <strong>{data.zona.elevacion_m} m s.n.m.</strong> ({data.zona.lat_real_3km}°, {data.zona.lon_real_3km}°)
-                </div>
-                <div style={{ fontSize: "0.85rem", color: "#38bdf8", marginTop: "0.35rem" }}>
-                  Mínima estimada: {data.kpis_zona.hora_tmin_lima} (Hora Perú)
-                </div>
-              </div>
-
-              <div style={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", borderRadius: "0.75rem", padding: "1.25rem" }}>
-                <div style={{ fontSize: "0.78rem", color: "#94a3b8", textTransform: "uppercase" }}>Viento & Humedad a 3 km</div>
-                <div style={{ fontSize: "1.5rem", fontWeight: 700, margin: "0.4rem 0" }}>
-                  {data.kpis_zona.viento_max_ms} m/s <span style={{ fontSize: "0.95rem", color: "#64748b" }}>· RH {data.kpis_zona.rh_media_pct}%</span>
-                </div>
-                <div style={{ fontSize: "0.85rem", color: "#94a3b8" }}>
-                  Cobertura de heladas en Cordillera (70×35): <strong>{data.resumen_cordillera.pct_territorio_helada}%</strong>
-                </div>
-                <div style={{ fontSize: "0.8rem", color: "#64748b", marginTop: "0.35rem" }}>
-                  Modelo Kaggle: <code>{data.model_info.exp_id}</code> (Skill Score Val: {data.model_info.val_skill_score})
-                </div>
-              </div>
-            </div>
-
-            <section style={{ backgroundColor: "#0f172a", border: "1px solid #1e293b", borderRadius: "0.75rem", padding: "1.5rem" }}>
-              <h2 style={{ fontSize: "1rem", fontWeight: 700, marginTop: 0, marginBottom: "1rem", color: "#e2e8f0" }}>
-                Evolución Horaria a 3 km ({data.periodo_lima} · Hora de Lima UTC-5)
-              </h2>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.88rem" }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid #334155", textAlign: "left", color: "#94a3b8" }}>
-                      <th style={{ padding: "0.6rem" }}>Hora Lima</th>
-                      <th style={{ padding: "0.6rem" }}>Temp (°C)</th>
-                      <th style={{ padding: "0.6rem" }}>Humedad RH (%)</th>
-                      <th style={{ padding: "0.6rem" }}>Viento Total (m/s)</th>
-                      <th style={{ padding: "0.6rem" }}>U Oeste→Este</th>
-                      <th style={{ padding: "0.6rem" }}>V Sur→Norte</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.serie_horaria_3km.map((h) => (
-                      <tr key={h.time_utc} style={{ borderBottom: "1px solid #1e293b" }}>
-                        <td style={{ padding: "0.55rem 0.6rem", fontWeight: 600 }}>{h.time_lima}</td>
-                        <td style={{ padding: "0.55rem 0.6rem", color: h.temp_c <= 0 ? "#60a5fa" : "#f8fafc", fontWeight: h.temp_c <= 0 ? 700 : 400 }}>
-                          {h.temp_c} °C
-                        </td>
-                        <td style={{ padding: "0.55rem 0.6rem" }}>{h.rh_pct}%</td>
-                        <td style={{ padding: "0.55rem 0.6rem", fontWeight: 600 }}>{h.wind_ms} m/s</td>
-                        <td style={{ padding: "0.55rem 0.6rem", color: "#94a3b8" }}>{h.u_ms}</td>
-                        <td style={{ padding: "0.55rem 0.6rem", color: "#94a3b8" }}>{h.v_ms}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </>
-        )}
-      </div>
+      <TimelineScrubber
+        timeline={gridData?.timeline || []}
+        hourIdx={hourIdx}
+        isPlaying={isPlaying}
+        playSpeed={playSpeed}
+        forecastHours={forecastHours}
+        historicalDate={historicalDate}
+        hudVisible={hudVisible}
+        onChangeHour={setHourIdx}
+        onTogglePlay={() => setIsPlaying((p) => !p)}
+        onChangeSpeed={setPlaySpeed}
+        onChangeHorizon={(h) => {
+          setHistoricalDate("");
+          setForecastHours(h);
+        }}
+        onLoadHistorical={(d) => setHistoricalDate(d)}
+      />
     </main>
   );
 }

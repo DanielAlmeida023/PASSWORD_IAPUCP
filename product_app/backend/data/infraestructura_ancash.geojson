@@ -1,0 +1,150 @@
+{
+  "type": "FeatureCollection",
+  "name": "infraestructura_critica_ancash",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "lag_palcacocha",
+        "nombre": "Laguna Palcacocha (Presa / Riesgo Aluvión)",
+        "categoria": "laguna_presa",
+        "elevacion_m": 4566,
+        "distrito": "Independencia / Huaraz",
+        "relevancia": "Monitoreo térmico glaciar y alerta temprana para Huaraz."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.381, -9.398] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "lag_paron",
+        "nombre": "Laguna Parón (Represa / Regulación Hídrica)",
+        "categoria": "laguna_presa",
+        "elevacion_m": 4185,
+        "distrito": "Caraz",
+        "relevancia": "Mayor laguna de la Cordillera Blanca; regula agua agrícola e hidroenergía."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.683, -8.993] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "lag_llanganuco",
+        "nombre": "Lagunas de Llanganuco (Chinancocha)",
+        "categoria": "laguna_presa",
+        "elevacion_m": 3850,
+        "distrito": "Yungay",
+        "relevancia": "Corredor turístico y cabecera de cuenca hacia Yungay."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.646, -9.075] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "hidro_canon_pato",
+        "nombre": "Central Hidroeléctrica Cañón del Pato",
+        "categoria": "infraestructura",
+        "elevacion_m": 1820,
+        "distrito": "Huallanca",
+        "relevancia": "Infraestructura energética crítica del río Santa."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.849, -8.817] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ref_huascaran",
+        "nombre": "Nevado Huascarán · Campo Base Musho",
+        "categoria": "montana_refugio",
+        "elevacion_m": 4250,
+        "distrito": "Yungay",
+        "relevancia": "Ruta principal de ascenso al pico más alto del Perú (6,768 m)."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.604, -9.122] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ref_laguna69",
+        "nombre": "Laguna 69 · Quebrada Demanda",
+        "categoria": "montana_refugio",
+        "elevacion_m": 4604,
+        "distrito": "Yungay",
+        "relevancia": "Ruta de trekking más visitada; alta exposición a ráfagas y frío extremo."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.611, -9.012] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ref_pastoruri",
+        "nombre": "Glaciar Pastoruri · Ruta Cambio Climático",
+        "categoria": "montana_refugio",
+        "elevacion_m": 5000,
+        "distrito": "Cátac",
+        "relevancia": "Zona glaciar crítica de monitoreo de heladas y viento."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.193, -9.927] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ref_santacruz",
+        "nombre": "Paso Punta Unión · Trekking Santa Cruz",
+        "categoria": "montana_refugio",
+        "elevacion_m": 4750,
+        "distrito": "Santa Cruz / Pomabamba",
+        "relevancia": "Paso de alta montaña expuesto a vientos encajonados."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.594, -8.902] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ciudad_huaraz",
+        "nombre": "Huaraz · COER Áncash / Capital Regional",
+        "categoria": "centro_poblado",
+        "elevacion_m": 3052,
+        "distrito": "Huaraz",
+        "relevancia": "Centro operativo regional y valle agrícola del Santa."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.528, -9.528] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ciudad_caraz",
+        "nombre": "Caraz · Valle Agroexportador",
+        "categoria": "centro_poblado",
+        "elevacion_m": 2256,
+        "distrito": "Caraz",
+        "relevancia": "Zona clave de flores, frutales y agricultura sensible a heladas."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.810, -9.047] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ciudad_chacas",
+        "nombre": "Chacas · Vertiente Oriental (Conchucos)",
+        "categoria": "centro_poblado",
+        "elevacion_m": 3359,
+        "distrito": "Chacas",
+        "relevancia": "Municipio altoandino con alta vulnerabilidad a heladas e incendios de pastizal."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.363, -9.160] }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "ciudad_recuay",
+        "nombre": "Recuay / Cátac · Cabecera Agrícola y Ganadera",
+        "categoria": "centro_poblado",
+        "elevacion_m": 3540,
+        "distrito": "Cátac",
+        "relevancia": "Zona de puna ganadera con riesgo recurrente de heladas nocturnas."
+      },
+      "geometry": { "type": "Point", "coordinates": [-77.431, -9.805] }
+    }
+  ]
+}
