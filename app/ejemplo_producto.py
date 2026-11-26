@@ -78,6 +78,54 @@ def predecir(Xw, static, times=None):
         if arch == "starter_cnn":
             dem_norm_t = torch.tensor((dem - dem.mean()) / dem.std(), dtype=torch.float32, device=device)[None, None]
             model = StarterCNN(grid=grid_t, dem_norm=dem_norm_t, w=64).to(device)
+        elif arch == "ensemble_v8":
+            from train import smooth_2d
+            from train_v8 import EnsembleV8
+
+            topo_np = build_topographic_features(dem, static["wrf_lats"], static["wrf_lons"])
+            topo_t = torch.tensor(topo_np, dtype=torch.float32, device=device)
+            dem_smooth = smooth_2d(dem, k=9)
+            lapse_phys = (-0.0065 * (dem - dem_smooth)).astype(np.float32)
+            dem_delta_km_t = torch.tensor(((dem - dem_smooth) / 1000.0).astype(np.float32), dtype=torch.float32, device=device)
+            lapse_delta_t = torch.tensor(lapse_phys / float(sd_x[1]), dtype=torch.float32, device=device)
+
+            ASD_T = torch.tensor(anom_sd, dtype=torch.float32, device=device)
+            bw = stats["blend_weights"]
+            model = EnsembleV8(
+                grid=grid_t,
+                topo_features=topo_t,
+                lapse_delta_norm=lapse_delta_t,
+                dem_delta_km=dem_delta_km_t,
+                mu_x=torch.tensor(mu_x, dtype=torch.float32, device=device),
+                sd_x=torch.tensor(sd_x, dtype=torch.float32, device=device),
+                anom_sd=ASD_T,
+                blend_weights=bw,
+            ).to(device)
+        elif arch == "ensemble_v7":
+            from train import smooth_2d
+            from train_v7 import EnsembleV7, build_v7_temporal_and_spatial_features
+
+            topo_np = build_topographic_features(dem, static["wrf_lats"], static["wrf_lons"])
+            topo_t = torch.tensor(topo_np, dtype=torch.float32, device=device)
+            dem_smooth = smooth_2d(dem, k=9)
+            lapse_phys = (-0.0065 * (dem - dem_smooth)).astype(np.float32)
+            lapse_phys_t = torch.tensor(lapse_phys, dtype=torch.float32, device=device)
+            lapse_delta_t = torch.tensor(lapse_phys / float(sd_x[1]), dtype=torch.float32, device=device)
+
+            CLIM_T = torch.tensor(clim_trn, dtype=torch.float32, device=device)
+            ASD_T = torch.tensor(anom_sd, dtype=torch.float32, device=device)
+            bw = stats["blend_weights"]
+            model = EnsembleV7(
+                grid=grid_t,
+                topo_features=topo_t,
+                lapse_delta_norm=lapse_delta_t,
+                lapse_phys_t=lapse_phys_t,
+                mu_x=torch.tensor(mu_x, dtype=torch.float32, device=device),
+                sd_x=torch.tensor(sd_x, dtype=torch.float32, device=device),
+                clim_trn=CLIM_T,
+                anom_sd=ASD_T,
+                blend_weights=bw,
+            ).to(device)
         elif arch in ("physics_unet_v3", "ensemble_3fam_v6"):
             from train_v3 import (
                 PhysicsUNet,
@@ -132,6 +180,24 @@ def predecir(Xw, static, times=None):
 
         with torch.no_grad():
             hb = torch.tensor(h_utc, dtype=torch.long, device=device)
+            if arch in ("ensemble_v7", "ensemble_v8"):
+                from train_v7 import build_v7_temporal_and_spatial_features
+
+                X_seq = Xw[:, -1]
+                t_seq = times if times is not None else np.array([f"20260101{i%24:02d}" for i in range(len(X_seq))])
+                W7, M24, S24, GRAD, TD = build_v7_temporal_and_spatial_features(X_seq, t_seq)
+                mu_td = float(stats["mu_td"])
+                sd_td = float(stats["sd_td"])
+                mu_grad = stats["mu_grad"]
+                sd_grad = stats["sd_grad"]
+                xb = torch.tensor(((W7 - mu_x) / sd_x).astype(np.float32), dtype=torch.float32, device=device)
+                mb = torch.tensor(((M24 - mu_x) / sd_x).astype(np.float32), dtype=torch.float32, device=device)
+                sb = torch.tensor((S24 / sd_x).astype(np.float32), dtype=torch.float32, device=device)
+                gb = torch.tensor(((GRAD - mu_grad) / sd_grad).astype(np.float32), dtype=torch.float32, device=device)
+                tb = torch.tensor(((TD - mu_td) / sd_td).astype(np.float32), dtype=torch.float32, device=device)
+                Y = model(xb, mb, sb, gb, tb, hb).cpu().numpy()
+                Y[..., 0] = np.clip(Y[..., 0], 0.0, 100.0)
+                return Y.astype(np.float32)
             if arch in ("physics_unet_v3", "ensemble_3fam_v6"):
                 # Reconstruir secuencia horaria X desde el último paso de cada ventana Xw[:, -1]
                 X_seq = Xw[:, -1]

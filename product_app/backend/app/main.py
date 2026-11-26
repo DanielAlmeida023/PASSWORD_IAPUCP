@@ -4,7 +4,7 @@ Hackathon IA PUCP 2026 · Equipo PASSWORD (DSC PUCP × IA-PUCP).
 
 Núcleo obligatorio:
   Pronóstico GFS actual (Open-Meteo vía app/gfs_forecast.py con caché + respaldo offline)
-  -> Modelo oficial entrenado para Kaggle (`models/modelo.pt` · EnsembleDownscaler 3 familias)
+  -> Modelo oficial entrenado para Kaggle (`models/modelo.pt` · `EnsembleV8` 4 familias *Full DirectRes*)
   -> Mapas 70x35 (3 km) de RH (%), T (°C), U (m/s), V (m/s) + Riesgo de Helada e Incendio.
 
 Funcionalidades tácticas y de decisión:
@@ -100,12 +100,19 @@ def get_model_metadata() -> Dict[str, Any]:
         if "val_rmse_per_var" in st
         else {"RH": 8.58, "T": 0.93, "U": 1.62, "V": 1.54}
     )
+    arch_str = str(st["arch"]) if "arch" in st else "ensemble_v8"
+    if arch_str == "ensemble_v8":
+        arch_label = "EnsembleV8 Full-DirectRes (ConvNeXt + MultiScale + UNet + CompactFNO + TemporalAttn)"
+    elif arch_str == "ensemble_v7":
+        arch_label = "EnsembleV7 (PhysicsConvNeXt + DirectResConvNeXt + CrossAttnUNet + CompactFNO)"
+    else:
+        arch_label = "EnsembleDownscaler (PhysicsUNet + PhysicsConvNeXt + PhysicsFNO)"
     return {
         "loaded": True,
-        "exp_id": str(st["exp_id"]) if "exp_id" in st else "ensemble_3fam_v6",
-        "arch": str(st["arch"]) if "arch" in st else "ensemble_3fam_v6",
-        "arch_label": "EnsembleDownscaler (PhysicsUNet + PhysicsConvNeXt + PhysicsFNO)",
-        "val_skill_score": round(float(st["best_score"]), 4) if "best_score" in st else 0.3835,
+        "exp_id": str(st["exp_id"]) if "exp_id" in st else arch_str,
+        "arch": arch_str,
+        "arch_label": arch_label,
+        "val_skill_score": round(float(st["best_score"]), 4) if "best_score" in st else 0.4071,
         "weights_path": "models/modelo.pt",
         "weights_mb": round(pesos_path.stat().st_size / 1e6, 2),
         "val_rmse": val_rmse,
@@ -158,16 +165,24 @@ def load_or_run_forecast(
         if start_date:
             X, times = get_gfs_forecast(start_date=start_date, end_date=end_date or start_date)
         else:
-            # Pedimos past_hours=6 y un margen de +6h para que la ventana centrada [t-6..t+6] sea óptima
+            # Pedimos past_hours=24 y margen +6h para alimentar los lags [-24..+6] de EnsembleV8
             fetch_h = min(max(forecast_hours + 6, 30), 78)
             X, times = get_gfs_forecast(
                 forecast_hours=fetch_h,
-                past_hours=6,
+                past_hours=24,
                 cache_path=str(disk_cache),
                 cache_max_age_h=2.0,
             )
-            # Actualizar copia de respaldo offline para garantizar demo 100% resiliente
-            if not fallback_cache.exists() and disk_cache.exists():
+            # Si había una caché previa más corta (ej. de past_hours=6), refrescar con past_hours=24
+            if len(X) < forecast_hours + 20 and disk_cache.exists():
+                disk_cache.unlink(missing_ok=True)
+                X, times = get_gfs_forecast(
+                    forecast_hours=fetch_h,
+                    past_hours=24,
+                    cache_path=str(disk_cache),
+                    cache_max_age_h=2.0,
+                )
+            if disk_cache.exists():
                 BACKEND_DATA_DIR.mkdir(parents=True, exist_ok=True)
                 np.savez_compressed(fallback_cache, X=X, times=times)
     except Exception as exc:
@@ -186,9 +201,9 @@ def load_or_run_forecast(
     Y_all = predecir(Xw, static, times=times_w)  # (H, 70, 35, 4) -> RH, T(K), U, V
     inf_ms = (time.time() - t_inf0) * 1000.0
 
-    # Recortar exactamente a las `forecast_hours` solicitadas (saltando las horas pasadas si fue live)
+    # Recortar exactamente a las `forecast_hours` futuras (saltando las 24h pasadas si fue live)
     if not start_date and len(Y_all) > forecast_hours:
-        start_idx = min(6, max(0, len(Y_all) - forecast_hours))
+        start_idx = min(24, max(0, len(Y_all) - forecast_hours))
         end_idx = min(start_idx + forecast_hours, len(Y_all))
         Y = Y_all[start_idx:end_idx]
         X_sub = X[start_idx:end_idx]

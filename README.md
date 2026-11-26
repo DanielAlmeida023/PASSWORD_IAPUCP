@@ -2,7 +2,7 @@
 
 **Hackathon IA PUCP 2026 (DSC PUCP × IA-PUCP) · Equipo `PASSWORD`**
 
-**INTI-3K** transforma el pronóstico global borroso del clima (**GFS ~27 km**) en mapas de alta resolución (**3 km**, grilla `70×35`) de humedad relativa (`RH`), temperatura (`T`) y viento (`U, V`) sobre el relieve de la Cordillera Blanca y el Callejón de Huaylas, mediante un **ensamble unificado guiado por física andina** (`models/modelo.pt`) y un **visor táctico 3D *100% Keyless*** orientado al COER Áncash, municipalidades, SERNANP y comunidades agrarias.
+**INTI-3K** transforma el pronóstico global borroso del clima (**GFS ~27 km**) en mapas de alta resolución (**3 km**, grilla `70×35`) de humedad relativa (`RH`), temperatura (`T`) y viento (`U, V`) sobre el relieve de la Cordillera Blanca y el Callejón de Huaylas, mediante el ensamble unificado **`EnsembleV8`** (`models/modelo.pt`, **`23.11 MB`**) y un **visor táctico 3D *100% Keyless*** orientado al COER Áncash, municipalidades, SERNANP y comunidades agrarias.
 
 - **Video Pitch (máx. 5 min):** `[Pegar aquí el link público al Video Pitch]`
 - **Integrantes (Equipo `PASSWORD`):** `[Integrante 1]`, `[Integrante 2]`, `[Integrante 3]`, `[Integrante 4]`
@@ -30,7 +30,7 @@
 kaggle competitions download -c hackathon-ia-pucp-2026
 unzip hackathon-ia-pucp-2026.zip -d data/
 ```
-*(El modelo ya entrenado `models/modelo.pt` de `30.70 MB` y las estadísticas `models/norm_stats.npz` ya vienen incluidos en el repositorio).*
+*(El modelo ya entrenado `models/modelo.pt` de `23.11 MB` y las estadísticas `models/norm_stats.npz` ya vienen incluidos en el repositorio).*
 
 ### 2. Opción A — Arranque completo con Docker Compose (1 comando)
 ```bash
@@ -73,14 +73,14 @@ python app/ejemplo_producto.py --horas 24
 ## Reproducibilidad del Modelo en Kaggle (`train/submission_notebook.ipynb`)
 
 El notebook **`train/submission_notebook.ipynb`** es **100% autocontenido** (compatible con Local, Google Colab y Kaggle GPU T4), fija todas las semillas (`SEED = 42`) y, ejecutado de principio a fin usando **exclusivamente** `data/train.npz`, `data/test.npz` y `data/static.npz`:
-1. Entrena las 3 familias complementarias (`PhysicsUNet`, `PhysicsConvNeXt` y `PhysicsFNO`) con validación temporal estricta (`ttr >= '2024061600'`).
-2. Construye el modelo único **`EnsembleDownscaler`** (**Skill Score local: `0.3821`** vs. `0.3357` del starter).
-3. Exporta los pesos limpios a `models/modelo.pt` (`30.70 MB`) y `models/norm_stats.npz`.
+1. **Fase A (Validación Temporal `>= 2024061600`):** Entrena 4 familias *Full DirectRes* (`DirectResConvNeXtV8`, `DirectResMultiScaleV8`, `DirectResUNetV8`, `DirectResFNOV8`) con `TemporalLagMixer` (`±24h`), `DirectPhysicalAnchor` (lapse-rate térmico/hídrico aprendible por hora UTC), gradientes espaciales GFS (divergencia, vorticidad, $\nabla T$, $\nabla RH$) y *Cross-Attention* GFS→WRF, logrando **Skill Score `0.4100`** (vs. `0.3357` del starter y `0.3984` de v7).
+2. **Fase B (Refit Final 100% Data Oficial):** Reentrena las 4 ramas sobre las `2,935` horas completas de febrero–junio con las épocas óptimas validadas (`[16, 19, 14, 14]`) y construye **`EnsembleV8`**.
+3. Exporta los pesos limpios a `models/modelo.pt` (`23.11 MB`) y `models/norm_stats.npz`.
 4. Genera y verifica `submission.csv` (`646,800` filas, `0` NaNs, `RH` en `[0, 100]`).
 
 Para re-ejecutarlo desde terminal:
 ```bash
-python -m jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=1800 train/submission_notebook.ipynb
+python -m jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=3600 train/submission_notebook.ipynb
 ```
 
 ---
@@ -94,10 +94,10 @@ python -m jupyter nbconvert --to notebook --execute --inplace --ExecutePreproces
 ├── .env.example                           ← Variables opcionales (FIRMS_MAP_KEY, OLLAMA_URL)
 ├── train/
 │   ├── starter_notebook.ipynb             ← Baseline oficial
-│   └── submission_notebook.ipynb          ← Notebook final autocontenido con salidas guardadas
+│   └── submission_notebook.ipynb          ← Notebook final autocontenido v8 con salidas guardadas
 ├── models/
-│   ├── modelo.pt                          ← Pesos limpios del EnsembleDownscaler (30.70 MB)
-│   └── norm_stats.npz                     ← Estadísticas de normalización del split de entrenamiento
+│   ├── modelo.pt                          ← Pesos limpios del EnsembleV8 (23.11 MB)
+│   └── norm_stats.npz                     ← Estadísticas de normalización (Refit 100% data)
 ├── app/
 │   ├── gfs_forecast.py                    ← Conector oficial Open-Meteo GFS (con caché)
 │   └── ejemplo_producto.py                ← Inferencia oficial de punta a punta con models/modelo.pt
