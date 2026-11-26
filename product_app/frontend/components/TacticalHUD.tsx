@@ -17,10 +17,11 @@ import {
   Trash2,
   Wind,
 } from "lucide-react";
-import type { DrawMode, GridForecastResponse, OpticMode } from "../types/inti3k";
+import type { DrawMode, GridForecastResponse, ModelInfo, OpticMode } from "../types/inti3k";
 
 interface TacticalHUDProps {
   gridData: GridForecastResponse | null;
+  modelInfo: ModelInfo | null;
   opticMode: OpticMode;
   compareGfs: boolean;
   drawMode: DrawMode;
@@ -40,6 +41,7 @@ interface TacticalHUDProps {
 
 export default function TacticalHUD({
   gridData,
+  modelInfo,
   opticMode,
   compareGfs,
   drawMode,
@@ -72,6 +74,29 @@ export default function TacticalHUD({
 
   const model = gridData?.model;
   const diffMax = gridData?.domain_kpis?.max_gfs_vs_ai_diff_c;
+  const gfs = gridData?.gfs_status;
+  const skill = modelInfo?.validation?.skill_score ?? model?.val_skill_score ?? null;
+  const lb = modelInfo?.kaggle?.public_lb ?? model?.kaggle_public_lb ?? null;
+  const modelName = modelInfo?.short_name ?? modelInfo?.name ?? model?.name ?? "Modelo";
+  const rmse = modelInfo?.validation?.rmse_per_var ?? model?.val_rmse;
+  const fmt = (v: number | undefined, d: number) => (typeof v === "number" ? v.toFixed(d) : "—");
+
+  const gfsBadge = (() => {
+    if (!gfs) return null;
+    const when = gfs.fetched_at_peru ? ` · bajado ${gfs.fetched_at_peru} (hora Perú)` : "";
+    if (gfs.mode === "offline_cache_fallback")
+      return {
+        cls: "border-amber-400/70 bg-amber-900/70 text-amber-200",
+        txt: `SIN CONEXIÓN · usando caché GFS${when} (${gfs.age_h ?? "?"} h de antigüedad)`,
+      };
+    if (gfs.mode === "cache_fresh")
+      return { cls: "border-sky-500/40 bg-sky-950/60 text-sky-300", txt: `GFS desde caché${when} · refresco cada ${gfs.refresh_every_h} h` };
+    if (gfs.mode === "open_meteo_live")
+      return { cls: "border-emerald-500/40 bg-emerald-950/50 text-emerald-300", txt: `GFS actual en vivo (Open-Meteo)${when}` };
+    if (gfs.mode === "historical_cache" || gfs.mode === "open_meteo_historical")
+      return { cls: "border-violet-500/40 bg-violet-950/60 text-violet-200", txt: `Fecha pasada · GFS histórico${gfs.mode === "historical_cache" ? " (caché)" : ""}` };
+    return { cls: "border-slate-600 bg-slate-900 text-slate-300", txt: gfs.label };
+  })();
 
   return (
     <header className="pointer-events-none absolute top-3 left-3 right-3 z-20 flex flex-col gap-2">
@@ -89,16 +114,25 @@ export default function TacticalHUD({
               </span>
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-slate-400">
-              <span className="rounded border border-emerald-500/30 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-300">
-                Modelo Kaggle: {model?.val_skill_score ?? 0.3835} Skill
+              <span
+                className="rounded border border-emerald-500/30 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-300"
+                title={
+                  modelInfo
+                    ? `${modelInfo.name} · commit ${modelInfo.commit} · ${modelInfo.weights.size_mb} MB · fold ${modelInfo.validation.fold}` +
+                      (modelInfo.served_weights?.matches_card ? " · pesos verificados (sha256)" : "")
+                    : "Cargando ficha del modelo (/api/model-info)"
+                }
+              >
+                Modelo Kaggle {modelName}: Skill val {skill !== null ? skill.toFixed(4) : "—"}
+                {lb !== null ? ` · LB público ${lb}` : ""}
+                {modelInfo?.served_weights?.matches_card ? " ✓" : ""}
               </span>
               <span>
-                Incertidumbre Val: T ±{model?.val_rmse?.T ?? 0.93}°C · RH ±{model?.val_rmse?.RH ?? 8.58}% · Viento ±
-                {model?.val_rmse?.U ?? 1.62} m/s
+                Error val (RMSE): T ±{fmt(rmse?.T, 2)}°C · RH ±{fmt(rmse?.RH, 1)}% · U ±{fmt(rmse?.U, 2)} m/s
               </span>
-              {gridData?.source_mode === "offline_cache_fallback" && (
-                <span className="rounded bg-amber-900/60 px-1.5 py-0.5 text-amber-300">
-                  Caché Local Activo
+              {gfsBadge && (
+                <span className={`rounded border px-1.5 py-0.5 ${gfsBadge.cls}`} title={gfs?.error ?? gfs?.label}>
+                  {gfsBadge.txt}
                 </span>
               )}
             </div>

@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata = {
   title: "INTI-3K · Centro de Comando Microclimático Cordillera Blanca",
   description:
-    "Downscaling climático 27 km → 3 km con IA (EnsembleDownscaler) para gestión de heladas, incendios forestales y seguridad en alta montaña en Áncash.",
+    "Downscaling climático 27 km → 3 km con el modelo de Kaggle EnsembleV8 para gestión de heladas, incendios forestales y seguridad en alta montaña en Áncash.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

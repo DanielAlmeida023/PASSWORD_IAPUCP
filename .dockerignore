@@ -1,0 +1,9 @@
+data/
+.venv/
+local_runs/
+kaggle_runner/outputs/
+kaggle_pipeline/experiments/oof/
+**/node_modules
+**/.next
+**/__pycache__
+.git

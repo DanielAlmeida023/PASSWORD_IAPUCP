@@ -154,7 +154,7 @@ def _fuse_highres_v8(
     static_b = learned_static.expand(B, -1, -1, -1)
     hh_high = h_vec[..., None, None].expand(B, 2, 70, 35)
 
-    # w + 19 + 1 + 1 + 2 + 10 + 12 + 2 = w + 47 canales
+    # w + 19 + 1 + 1 + 2 + n_topo + 12 + 2 = w + 37 + n_topo canales (n_topo = 10 por defecto -> w + 47)
     fused = torch.cat([f_up, raw_up, t_prior, rh_prior_norm, oro_feats, topo_b, static_b, hh_high], dim=1)
     return fused, topo_b, oro_feats
 
@@ -180,6 +180,33 @@ class MultiScaleBlock2D(nn.Module):
         return x + self.gamma * self.pw2(self.drop(self.act(self.pw1(self.norm(ms)))))
 
 
+class DeepWindHead(nn.Module):
+    """Cabeza de viento (U, V) con más capacidad (run_cv --wind-head): conv 3x3 de entrada + 2 bloques
+    residuales conv 3x3 dilatados (d=2, 4 -> campo receptivo ~±7 celdas ≈ ±21 km) + proyección 1x1."""
+
+    def __init__(self, cin: int, hid: int, dilations=(2, 4)):
+        super().__init__()
+        self.inp = nn.Sequential(nn.Conv2d(cin, hid, 3, padding=1), nn.GELU())
+        self.body = nn.ModuleList([
+            nn.Sequential(nn.Conv2d(hid, hid, 3, padding=d, dilation=d), nn.GroupNorm(1, hid), nn.GELU())
+            for d in dilations
+        ])
+        self.out = nn.Conv2d(hid, 2, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.inp(x)
+        for blk in self.body:
+            y = y + blk(y)
+        return self.out(y)
+
+
+def make_wind_head(cin: int, hid: int, wind_head: bool = False) -> nn.Module:
+    """Default = la cabeza original (mismos módulos y orden de init -> state_dict/semillas idénticos)."""
+    if wind_head:
+        return DeepWindHead(cin, hid)
+    return nn.Sequential(nn.Conv2d(cin, hid, 3, padding=1), nn.GELU(), nn.Conv2d(hid, 2, 1))
+
+
 class _DirectResBaseV8(nn.Module):
     """Base común v8: buffers compartidos, TemporalLagMixer, highres fusion y DirectPhysicalAnchor."""
 
@@ -193,8 +220,14 @@ class _DirectResBaseV8(nn.Module):
         sd_x: torch.Tensor,
         anom_sd: torch.Tensor,
         dropout: float = 0.15,
+        wind_head: bool = False,
     ):
         super().__init__()
+        # n_topo = 10 (train.build_topographic_features) o 10 + extra (topo_extra.py, run_cv --topo-extra):
+        # los canales extra van al final, así topo[:, 1:3] (dy, dx) que usa oro_feats no cambia.
+        self.n_topo = int(topo_features.shape[0])
+        assert self.n_topo >= 3, f"topo_features debe tener >= 3 canales (dem, dy, dx), tiene {self.n_topo}"
+        self.wind_head = bool(wind_head)
         self.register_buffer("topo", topo_features[None])
         self.register_buffer("lapse_delta", lapse_delta_norm[None, None])
         self.register_buffer("dem_delta_km_2d", dem_delta_km)
@@ -220,8 +253,9 @@ class _DirectResBaseV8(nn.Module):
 class DirectResConvNeXtV8(_DirectResBaseV8):
     """Familia 1 v8: ConvNeXt 7x7 dilatado con TemporalLagMixer + CrossAttn + DirectPhysicalAnchor."""
 
-    def __init__(self, grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, w=84, dropout=0.15):
-        super().__init__(grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, dropout)
+    def __init__(self, grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, w=84, dropout=0.15,
+                 wind_head: bool = False):
+        super().__init__(grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, dropout, wind_head)
         self.gfs_stem = nn.Sequential(
             nn.Conv2d(98, w, 3, padding=1),
             nn.GroupNorm(1, w),
@@ -229,7 +263,7 @@ class DirectResConvNeXtV8(_DirectResBaseV8):
             ConvNeXtBlock2D(w, 5, 1, 2, dropout * 0.5),
             ConvNeXtBlock2D(w, 5, 1, 2, dropout * 0.5),
         )
-        self.highres_stem = nn.Sequential(nn.Conv2d(w + 47, w, 1), nn.GroupNorm(1, w), nn.GELU())
+        self.highres_stem = nn.Sequential(nn.Conv2d(w + 37 + self.n_topo, w, 1), nn.GroupNorm(1, w), nn.GELU())
         self.cross_attn = GFS2WRFCrossAttention(high_ch=w, gfs_ch=w, d_attn=64, num_heads=4)
         self.blocks = nn.Sequential(
             ConvNeXtBlock2D(w, 7, 1, 3, dropout),
@@ -239,9 +273,9 @@ class DirectResConvNeXtV8(_DirectResBaseV8):
             ConvNeXtBlock2D(w, 7, 1, 3, dropout),
             ConvNeXtBlock2D(w, 5, 1, 2, dropout * 0.5),
         )
-        head_in = w + 12
+        head_in = w + 2 + self.n_topo  # feat + topo (10 [+ extra]) + oro_feats (2)
         self.head_thermo = nn.Sequential(nn.Conv2d(head_in, w // 2, 3, padding=1), nn.GELU(), nn.Conv2d(w // 2, 2, 1))
-        self.head_wind = nn.Sequential(nn.Conv2d(head_in, w // 2, 3, padding=1), nn.GELU(), nn.Conv2d(w // 2, 2, 1))
+        self.head_wind = make_wind_head(head_in, w // 2, wind_head)
 
     def forward(self, w_norm, m24_norm, s24_norm, grad_norm, td_norm, h):
         gfs_full, xt, h_vec = self._encode_inputs(w_norm, m24_norm, s24_norm, grad_norm, td_norm, h)
@@ -256,8 +290,9 @@ class DirectResConvNeXtV8(_DirectResBaseV8):
 class DirectResMultiScaleV8(_DirectResBaseV8):
     """Familia 2 v8: Bloques Multi-Escala (3x3 + 7x7 dilatado) con TemporalLagMixer + DirectPhysicalAnchor."""
 
-    def __init__(self, grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, w=96, dropout=0.18):
-        super().__init__(grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, dropout)
+    def __init__(self, grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, w=96, dropout=0.18,
+                 wind_head: bool = False):
+        super().__init__(grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, dropout, wind_head)
         self.gfs_stem = nn.Sequential(
             nn.Conv2d(98, w, 3, padding=1),
             nn.GroupNorm(1, w),
@@ -265,7 +300,7 @@ class DirectResMultiScaleV8(_DirectResBaseV8):
             MultiScaleBlock2D(w, dilation=1, expand=2, dropout=dropout * 0.5),
             MultiScaleBlock2D(w, dilation=1, expand=2, dropout=dropout * 0.5),
         )
-        self.highres_stem = nn.Sequential(nn.Conv2d(w + 47, w, 1), nn.GroupNorm(1, w), nn.GELU())
+        self.highres_stem = nn.Sequential(nn.Conv2d(w + 37 + self.n_topo, w, 1), nn.GroupNorm(1, w), nn.GELU())
         self.cross_attn = GFS2WRFCrossAttention(high_ch=w, gfs_ch=w, d_attn=64, num_heads=4)
         self.blocks = nn.Sequential(
             MultiScaleBlock2D(w, dilation=1, expand=3, dropout=dropout),
@@ -274,9 +309,9 @@ class DirectResMultiScaleV8(_DirectResBaseV8):
             MultiScaleBlock2D(w, dilation=3, expand=3, dropout=dropout),
             MultiScaleBlock2D(w, dilation=1, expand=2, dropout=dropout * 0.5),
         )
-        head_in = w + 12
+        head_in = w + 2 + self.n_topo  # feat + topo (10 [+ extra]) + oro_feats (2)
         self.head_thermo = nn.Sequential(nn.Conv2d(head_in, w // 2, 3, padding=1), nn.GELU(), nn.Conv2d(w // 2, 2, 1))
-        self.head_wind = nn.Sequential(nn.Conv2d(head_in, w // 2, 3, padding=1), nn.GELU(), nn.Conv2d(w // 2, 2, 1))
+        self.head_wind = make_wind_head(head_in, w // 2, wind_head)
 
     def forward(self, w_norm, m24_norm, s24_norm, grad_norm, td_norm, h):
         gfs_full, xt, h_vec = self._encode_inputs(w_norm, m24_norm, s24_norm, grad_norm, td_norm, h)
@@ -291,8 +326,9 @@ class DirectResMultiScaleV8(_DirectResBaseV8):
 class DirectResUNetV8(_DirectResBaseV8):
     """Familia 3 v8: U-Net 3 niveles + CrossAttn en 18x9 convertida a DirectPhysicalAnchor."""
 
-    def __init__(self, grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, w=64, dropout=0.14):
-        super().__init__(grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, dropout)
+    def __init__(self, grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, w=64, dropout=0.14,
+                 wind_head: bool = False):
+        super().__init__(grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, dropout, wind_head)
         self.gfs_enc = nn.Sequential(
             nn.Conv2d(98, w, 3, padding=1, bias=False),
             nn.GroupNorm(8, w),
@@ -301,7 +337,7 @@ class DirectResUNetV8(_DirectResBaseV8):
             CompactResBlock(w, dropout=dropout * 0.5),
         )
         self.enc1 = nn.Sequential(
-            nn.Conv2d(w + 47, w, 3, padding=1, bias=False), nn.GroupNorm(8, w), nn.GELU(), CompactResBlock(w, dropout)
+            nn.Conv2d(w + 37 + self.n_topo, w, 3, padding=1, bias=False), nn.GroupNorm(8, w), nn.GELU(), CompactResBlock(w, dropout)
         )
         self.enc2 = nn.Sequential(
             nn.Conv2d(w, w * 2, 3, stride=2, padding=1, bias=False), nn.GroupNorm(8, w * 2), nn.GELU(), CompactResBlock(w * 2, dropout)
@@ -316,9 +352,9 @@ class DirectResUNetV8(_DirectResBaseV8):
         self.dec1 = nn.Sequential(
             nn.Conv2d(w * 3, w, 3, padding=1, bias=False), nn.GroupNorm(8, w), nn.GELU(), CompactResBlock(w, dropout * 0.5)
         )
-        head_in = w + 12
+        head_in = w + 2 + self.n_topo  # feat + topo (10 [+ extra]) + oro_feats (2)
         self.head_thermo = nn.Sequential(nn.Conv2d(head_in, w // 2, 3, padding=1), nn.GELU(), nn.Conv2d(w // 2, 2, 1))
-        self.head_wind = nn.Sequential(nn.Conv2d(head_in, w // 2, 3, padding=1), nn.GELU(), nn.Conv2d(w // 2, 2, 1))
+        self.head_wind = make_wind_head(head_in, w // 2, wind_head)
 
     def forward(self, w_norm, m24_norm, s24_norm, grad_norm, td_norm, h):
         gfs_full, xt, h_vec = self._encode_inputs(w_norm, m24_norm, s24_norm, grad_norm, td_norm, h)
@@ -337,24 +373,25 @@ class DirectResUNetV8(_DirectResBaseV8):
 class DirectResFNOV8(_DirectResBaseV8):
     """Familia 4 v8: FNO compacto regularizado (w=32, modes 12x8) con CrossAttn + DirectPhysicalAnchor."""
 
-    def __init__(self, grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, w=32, dropout=0.18):
-        super().__init__(grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, dropout)
+    def __init__(self, grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, w=32, dropout=0.18,
+                 wind_head: bool = False):
+        super().__init__(grid, topo_features, lapse_delta_norm, dem_delta_km, mu_x, sd_x, anom_sd, dropout, wind_head)
         self.gfs_stem = nn.Sequential(
             nn.Conv2d(98, w, 3, padding=1, bias=False),
             nn.GroupNorm(8, w),
             nn.GELU(),
             FNOBlock2D(w, modes1=5, modes2=4, dropout=dropout * 0.5),
         )
-        self.lift = nn.Sequential(nn.Conv2d(w + 47, w, 1, bias=False), nn.GroupNorm(8, w), nn.GELU())
+        self.lift = nn.Sequential(nn.Conv2d(w + 37 + self.n_topo, w, 1, bias=False), nn.GroupNorm(8, w), nn.GELU())
         self.cross_attn = GFS2WRFCrossAttention(high_ch=w, gfs_ch=w, d_attn=32, num_heads=4)
         self.fno_layers = nn.Sequential(
             FNOBlock2D(w, 12, 8, dropout),
             FNOBlock2D(w, 12, 8, dropout),
             FNOBlock2D(w, 8, 6, dropout),
         )
-        head_in = w + 12
+        head_in = w + 2 + self.n_topo  # feat + topo (10 [+ extra]) + oro_feats (2)
         self.head_thermo = nn.Sequential(nn.Conv2d(head_in, w, 3, padding=1), nn.GELU(), nn.Conv2d(w, 2, 1))
-        self.head_wind = nn.Sequential(nn.Conv2d(head_in, w, 3, padding=1), nn.GELU(), nn.Conv2d(w, 2, 1))
+        self.head_wind = make_wind_head(head_in, w, wind_head)
 
     def forward(self, w_norm, m24_norm, s24_norm, grad_norm, td_norm, h):
         gfs_full, xt, h_vec = self._encode_inputs(w_norm, m24_norm, s24_norm, grad_norm, td_norm, h)

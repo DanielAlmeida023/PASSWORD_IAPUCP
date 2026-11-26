@@ -1,0 +1,27 @@
+# Cola Kaggle por prioridad (scheduler reanudable; los ya hechos están en scheduler_state.json)
+refit-convnext-s42 | --model convnext --seed 42 --refit --epochs 17
+refit-multiscale-s777 | --model multiscale --seed 777 --refit --epochs 17
+cv-unet-s203 | --model unet --seed 203 --epochs 24
+cv-fno-s304 | --model fno --seed 304 --epochs 24
+# refits corregidos: calendario 24 épocas, parar en la época validada por CV (EMA)
+r2-unet-s42 | --model unet --seed 42 --refit --epochs 24 --stop-epoch 12
+r2-convnext-s42 | --model convnext --seed 42 --refit --epochs 24 --stop-epoch 16
+r2-multiscale-s777 | --model multiscale --seed 777 --refit --epochs 24 --stop-epoch 16
+r2-multiscale-s102 | --model multiscale --seed 102 --refit --epochs 24 --stop-epoch 16
+r2-unet-s203 | --model unet --seed 203 --refit --epochs 24 --stop-epoch 12
+r2-fno-s304 | --model fno --seed 304 --refit --epochs 24 --stop-epoch 12
+chk-unet-stop12-noval | --model unet --seed 42 --epochs 24 --stop-epoch 12 --no-val-selection --tag stop12nv
+cv-fno86-s304 | --model fno --seed 304 --epochs 24 --fno-modes 8,6 --wd 4e-2 --tag m86
+cv-unet-lagpast-s42 | --model unet --lags past --seed 42 --epochs 24
+cv-unet-s777 | --model unet --seed 777 --epochs 24
+cv-unet-s1234 | --model unet --seed 1234 --epochs 24
+cv-convnext-s777 | --model convnext --seed 777 --epochs 24
+# Viento (medir vs unet_42 0.3878 y unet_203 0.3854; exigir mejora en ambas semillas)
+cv-unet-topox-s42 | --model unet --seed 42 --epochs 24 --topo-extra
+cv-unet-wh-s42 | --model unet --seed 42 --epochs 24 --wind-head
+cv-unet-topox-wh-s42 | --model unet --seed 42 --epochs 24 --topo-extra --wind-head
+cv-unet-topox-wh-s203 | --model unet --seed 203 --epochs 24 --topo-extra --wind-head
+# Más semillas (diversidad)
+cv-multiscale-s42 | --model multiscale --seed 42 --epochs 24
+cv-fno-s42 | --model fno --seed 42 --epochs 24
+cv-convnext-s1234 | --model convnext --seed 1234 --epochs 24

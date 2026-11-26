@@ -5,6 +5,10 @@ services:
       dockerfile: product_app/backend/Dockerfile
     ports:
       - "8000:8000"
+    volumes:
+      # La data oficial de Kaggle (static.npz) NO se copia a la imagen: se monta en solo lectura
+      # donde el backend la busca (ROOT_DIR/data = /workspace/data). Los pesos (models/) sí van en la imagen.
+      - ./data:/workspace/data:ro
     restart: unless-stopped
 
   frontend:

@@ -40,45 +40,73 @@ from train import (
 )
 from train_v3 import compute_dewpoint_c, update_ema
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = ROOT_DIR / "data"
-EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent / "experiments"
+from paths import ROOT_DIR, DATA_DIR, EXPERIMENTS_DIR  # env PASSWORD_DATA_DIR / PASSWORD_OUT_DIR
 
 V7_LAGS = (-24, -6, -3, -1, 0, 1, 3, 6, 24)  # índice 4 = t, 2 = t-3, 6 = t+3, 0 = t-24, 8 = t+24
 
+# Plan B causal (FASE 5.1): solo GFS de horas <= t. Se mantienen 9 slots y el SIGNIFICADO de los slots que
+# las arquitecturas leen por índice (_assemble_v7_gfs_tensor / TemporalLagMixer): 0 = t-24, 2 = t-3, 4 = t.
+# Los slots 0..4 son idénticos al default; los 4 slots futuros (+1, +3, +6, +24) pasan a (-2, -12, -9, -18):
+# slot 5 (+1 -> -2) completa la tendencia horaria t-3..t; slot 6 (+3 -> -12, usado en d_next y wspd) da la
+# tendencia de medio ciclo diurno; slot 7 (+6 -> -9) y slot 8 (+24 -> -18, wspd) cubren la fase diurna
+# entre t-24 y t-6. Todo cabe en 24 h de historia (mismo requisito de contexto pasado que hoy).
+V7_LAGS_PAST = (-24, -6, -3, -1, 0, -2, -12, -9, -18)
+
+# Configuraciones de lags: ventana M24/S24 = [t+w0, t+w1] (inclusive); causal => el relleno de bordes nunca
+# usa una hora > t.
+LAG_SETS: Dict[str, Dict] = {
+    "default": {"lags": V7_LAGS, "window": (-12, 12), "causal": False},
+    "past": {"lags": V7_LAGS_PAST, "window": (-24, 0), "causal": True},
+}
+for _cfg in LAG_SETS.values():  # invariantes de las arquitecturas (índices fijos)
+    assert len(_cfg["lags"]) == 9 and _cfg["lags"][4] == 0 and _cfg["lags"][2] == -3 and _cfg["lags"][0] == -24
+    if _cfg["causal"]:
+        assert max(_cfg["lags"]) <= 0 and _cfg["window"][1] <= 0
+
+
+def get_lag_config(lag_set: str = "default") -> Dict:
+    if lag_set not in LAG_SETS:
+        raise ValueError(f"lag_set desconocido {lag_set!r}; opciones: {sorted(LAG_SETS)}")
+    return LAG_SETS[lag_set]
+
 
 def build_v7_temporal_and_spatial_features(
-    X: np.ndarray, t: np.ndarray
+    X: np.ndarray, t: np.ndarray, lag_set: str = "default"
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Construye entradas en espacio GFS (17x13):
-      - W    : (N, 9, 17, 13, 4) para V7_LAGS
-      - M24  : (N, 17, 13, 4) media móvil [t-12h, t+12h]
-      - S24  : (N, 17, 13, 4) std móvil [t-12h, t+12h]
+      - W    : (N, 9, 17, 13, 4) para los lags de `lag_set` (default: V7_LAGS)
+      - M24  : (N, 17, 13, 4) media móvil [t-12h, t+12h] (past: [t-24h, t])
+      - S24  : (N, 17, 13, 4) std móvil   [t-12h, t+12h] (past: [t-24h, t])
       - GRAD : (N, 6, 17, 13) [dT_dx, dT_dy_north, dRH_dx, dRH_dy_north, div, vort]
       - TD   : (N, 1, 17, 13) punto de rocío (Magnus) en °C
+    lag_set="past" es causal: ningún array de la hora t lee GFS de horas > t (ni al rellenar huecos).
     """
+    cfg = get_lag_config(lag_set)
+    lags, (w0, w1), causal = cfg["lags"], cfg["window"], cfg["causal"]
     ts = pd.to_datetime(t.astype(str), format="%Y%m%d%H")
     ts_ns = ts.values.astype("datetime64[h]").astype(np.int64)
     pos = {int(h): i for i, h in enumerate(ts_ns)}
 
     N = len(X)
-    W = np.empty((N, len(V7_LAGS)) + X.shape[1:], dtype=np.float32)
+    W = np.empty((N, len(lags)) + X.shape[1:], dtype=np.float32)
     M24 = np.empty_like(X, dtype=np.float32)
     S24 = np.empty_like(X, dtype=np.float32)
 
     for i, cur_h in enumerate(ts_ns):
-        for j, lag in enumerate(V7_LAGS):
+        for j, lag in enumerate(lags):
             target_h = int(cur_h + lag)
             idx = pos.get(target_h, None)
             if idx is None:
                 for delta in (1, -1, 2, -2, 3, -3):
+                    if causal and target_h + delta > cur_h:
+                        continue
                     idx = pos.get(target_h + delta, None)
                     if idx is not None:
                         break
             W[i, j] = X[idx] if idx is not None else X[i]
 
-        win_idxs = [pos[int(cur_h + d)] for d in range(-12, 13) if int(cur_h + d) in pos]
+        win_idxs = [pos[int(cur_h + d)] for d in range(w0, w1 + 1) if int(cur_h + d) in pos]
         if len(win_idxs) >= 2:
             sub = X[win_idxs]
             M24[i] = sub.mean(axis=0)
@@ -623,9 +651,26 @@ def train_member_v7(
     weight_decay: float = 1.5e-2,
     noise_std: float = 0.045,
     seed: int = 42,
+    loss_weights=None,
+    select_on_val: bool = True,
+    stop_epoch: int = 0,
 ):
+    """
+    loss_weights : None o secuencia de 4 pesos por variable [RH, T, U, V] para la pérdida skill
+                   (media ponderada; None = media simple, comportamiento original).
+    select_on_val: True (original) elige la mejor época/EMA mirando val -> el OOF queda
+                   ligeramente optimista. False usa el estado de la ÚLTIMA época (EMA si
+                   epochs > 5, si no LIVE), sin mirar val: OOF honesto para blending/CV.
+    stop_epoch  : si > 0, el calendario OneCycle se define con `epochs` pero el entrenamiento se
+                  detiene tras `stop_epoch` épocas (p. ej. calendario de 24, parar en 12). Con
+                  select_on_val=False se usa el estado (EMA) de esa época: es lo que valida el CV.
+    """
     seed_everything(seed)
     model = model.to(device)
+    lw_t = None
+    if loss_weights is not None:
+        lw_t = torch.tensor(np.asarray(loss_weights, dtype=np.float32), device=device)
+        lw_t = lw_t / lw_t.sum()
     ema_model = copy.deepcopy(model).eval()
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -641,7 +686,8 @@ def train_member_v7(
     best_skill_d, best_rmse_d = {}, {}
     t_start = time.time()
 
-    for ep in range(epochs):
+    n_run = min(epochs, stop_epoch) if stop_epoch and stop_epoch > 0 else epochs
+    for ep in range(n_run):
         model.train()
         np.random.shuffle(itr)
         running_loss, n_batches = 0.0, 0
@@ -663,7 +709,8 @@ def train_member_v7(
             y_pred = model(xb, mb, sb, gb, tb, hb)
             err_sq = ((y_pred - yb) ** 2).mean(dim=(1, 2))
             w_mse = (err_sq * wb[:, None]).sum(dim=0) / (wb.sum() + 1e-8)
-            skill_loss = (torch.sqrt(w_mse + 1e-6) / clim_rmse_trn_t).mean()
+            skill_terms = torch.sqrt(w_mse + 1e-6) / clim_rmse_trn_t
+            skill_loss = skill_terms.mean() if lw_t is None else (skill_terms * lw_t).sum()
 
             optimizer.zero_grad()
             skill_loss.backward()
@@ -688,7 +735,14 @@ def train_member_v7(
             sc_ep, rmse_ep, skill_ep, src_ep, cand = sc_live, rmse_live, skill_live, "LIVE", model
 
         mark = ""
-        if sc_ep > best_sc:
+        if not select_on_val:
+            # Sin selección por val: siempre el estado de la última época (EMA desde ep>=5).
+            cand = ema_model if ep >= 5 else model
+            src_ep = "EMA" if ep >= 5 else "LIVE"
+            sc_ep, rmse_ep, skill_ep = (sc_ema, rmse_ema, skill_ema) if ep >= 5 else (sc_live, rmse_live, skill_live)
+            best_sc, best_src, best_ep, best_rmse_d, best_skill_d = sc_ep, src_ep, ep + 1, rmse_ep, skill_ep
+            best_state = {k: v.detach().cpu().clone() for k, v in cand.state_dict().items()}
+        elif sc_ep > best_sc:
             best_sc = sc_ep
             best_src = src_ep
             best_ep = ep + 1
@@ -715,14 +769,14 @@ def train_member_v7(
     return best_state, val_oof, sc_fin, best_ep, skill_fin, rmse_fin
 
 
-def prepare_split_tensors(Xtr, Ytr, ttr, st, trn_mask, val_mask, device: str):
+def prepare_split_tensors(Xtr, Ytr, ttr, st, trn_mask, val_mask, device: str, lag_set: str = "default"):
     dem = st["dem"].astype(np.float32)
     h_tr = extract_hour_utc(ttr)
     clim_trn = compute_climatology(Ytr[trn_mask], ttr[trn_mask])
     clim_rmse_val = np.sqrt(((clim_trn[h_tr[val_mask]] - Ytr[val_mask]) ** 2).mean(axis=(0, 1, 2)))
     clim_rmse_trn = np.sqrt(((clim_trn[h_tr[trn_mask]] - Ytr[trn_mask]) ** 2).mean(axis=(0, 1, 2))).astype(np.float32)
 
-    W, M24, S24, GRAD, TD = build_v7_temporal_and_spatial_features(Xtr, ttr)
+    W, M24, S24, GRAD, TD = build_v7_temporal_and_spatial_features(Xtr, ttr, lag_set=lag_set)
 
     mu_x = Xtr[trn_mask].mean(axis=(0, 1, 2)).astype(np.float32)
     sd_x = Xtr[trn_mask].std(axis=(0, 1, 2)).astype(np.float32)
@@ -752,6 +806,7 @@ def prepare_split_tensors(Xtr, Ytr, ttr, st, trn_mask, val_mask, device: str):
     lapse_phys_t = torch.tensor(lapse_phys, dtype=torch.float32, device=device)
 
     return {
+        "lag_set": lag_set,
         "h_tr": h_tr,
         "clim_trn": clim_trn,
         "clim_rmse_val": clim_rmse_val,
@@ -770,6 +825,14 @@ def prepare_split_tensors(Xtr, Ytr, ttr, st, trn_mask, val_mask, device: str):
         "topo_t": topo_t,
         "lapse_delta_norm": lapse_delta_norm,
         "lapse_phys_t": lapse_phys_t,
+        # Estadísticos en numpy (para normalizar test en refit y guardar norm_stats compatibles)
+        "mu_x": mu_x,
+        "sd_x": sd_x,
+        "mu_td": mu_td,
+        "sd_td": sd_td,
+        "mu_grad": mu_grad,
+        "sd_grad": sd_grad,
+        "anom_sd": anom_sd,
     }
 
 

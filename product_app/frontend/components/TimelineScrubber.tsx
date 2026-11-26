@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Calendar, Pause, Play } from "lucide-react";
-import type { TimelinePoint } from "../types/inti3k";
+import type { HistoricalCase, TimelinePoint } from "../types/inti3k";
 
 interface TimelineScrubberProps {
   timeline: TimelinePoint[];
@@ -11,6 +11,7 @@ interface TimelineScrubberProps {
   playSpeed: number;
   forecastHours: number;
   historicalDate: string;
+  historicalCases: HistoricalCase[];
   hudVisible: boolean;
   onChangeHour: (idx: number) => void;
   onTogglePlay: () => void;
@@ -26,6 +27,7 @@ export default function TimelineScrubber({
   playSpeed,
   forecastHours,
   historicalDate,
+  historicalCases,
   hudVisible,
   onChangeHour,
   onTogglePlay,
@@ -34,8 +36,12 @@ export default function TimelineScrubber({
   onLoadHistorical,
 }: TimelineScrubberProps) {
   const [dateInput, setDateInput] = useState(historicalDate);
+  useEffect(() => setDateInput(historicalDate), [historicalDate]);
 
   if (!hudVisible || timeline.length === 0) return null;
+
+  // Fechas pasadas: hasta anteayer (lo reciente se ve con el pronóstico actual)
+  const maxDate = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
 
   const current = timeline[Math.min(hourIdx, timeline.length - 1)];
 
@@ -65,7 +71,12 @@ export default function TimelineScrubber({
               ))}
             </div>
             <div className="text-xs font-bold text-slate-100">
-              {current?.time_lima} <span className="text-[10px] font-normal text-slate-400">(Hora Perú UTC−5)</span>
+              {current?.time_lima} <span className="text-[10px] font-normal text-slate-400">(hora Perú, UTC−5)</span>
+              {historicalDate && (
+                <span className="ml-1.5 rounded bg-violet-900/70 px-1.5 py-0.5 text-[10px] font-semibold text-violet-200">
+                  FECHA PASADA {historicalDate}
+                </span>
+              )}
             </div>
           </div>
 
@@ -94,6 +105,25 @@ export default function TimelineScrubber({
               ))}
             </div>
 
+            {historicalCases.length > 0 && (
+              <select
+                value={historicalCases.find((c) => c.start_date === historicalDate)?.id ?? ""}
+                onChange={(e) => {
+                  const c = historicalCases.find((x) => x.id === e.target.value);
+                  if (c) onLoadHistorical(c.start_date);
+                }}
+                className="rounded border border-violet-700/60 bg-slate-900 px-1.5 py-0.5 text-[11px] text-violet-200"
+                title="Casos reales con GFS histórico (Open-Meteo)"
+              >
+                <option value="">Caso histórico…</option>
+                {historicalCases.map((c) => (
+                  <option key={c.id} value={c.id} title={c.nota}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            )}
+
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -105,9 +135,11 @@ export default function TimelineScrubber({
               <input
                 type="date"
                 value={dateInput}
+                max={maxDate}
+                min="2021-03-23"
                 onChange={(e) => setDateInput(e.target.value)}
                 className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[11px] text-slate-200"
-                title="Consultar fecha pasada del GFS (opcional)"
+                title="Fecha pasada (día en hora Perú): GFS histórico de Open-Meteo + modelo INTI-3K"
               />
               {dateInput && (
                 <button

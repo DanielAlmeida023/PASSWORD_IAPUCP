@@ -84,7 +84,7 @@ export default function DecisionSidebar({
       {/* Estado Operativo y Recomendación */}
       {loadingAnalysis ? (
         <div className="rounded-lg border border-sky-500/30 bg-slate-900/80 p-4 text-xs text-sky-300 animate-pulse">
-          Consultando inferencia 3 km de EnsembleDownscaler...
+          Consultando inferencia 3 km del modelo INTI-3K (EnsembleV8)...
         </div>
       ) : analysis ? (
         <>
@@ -104,20 +104,77 @@ export default function DecisionSidebar({
                 {analysis.geometry_type} · {analysis.area_km2} km²
               </span>
             </div>
-            <div className="mt-1 text-xs font-semibold text-white">{analysis.label}</div>
+            <div className="mt-1 text-xs font-semibold text-white">
+              {analysis.label} <span className="font-normal text-slate-300">· Semáforo de helada</span>
+            </div>
             <p className="mt-1 text-[11px] leading-relaxed text-slate-200">{analysis.recommendation}</p>
           </div>
+
+          {/* Alertas secundarias (incendio/sequedad, viento): cada una con su causa, celda 3 km y acción */}
+          {analysis.alertas_secundarias?.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {analysis.alertas_secundarias.map((a) => (
+                <div
+                  key={a.tipo}
+                  className={`rounded-lg border p-2 text-[11px] ${
+                    a.nivel === "alta"
+                      ? "border-orange-500/50 bg-orange-950/40 text-orange-200"
+                      : "border-yellow-600/40 bg-yellow-950/30 text-yellow-200"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 font-bold">
+                    <span className="flex items-center gap-1">
+                      {a.tipo === "incendio_sequedad" ? <Flame className="h-3.5 w-3.5" /> : <AlertTriangle className="h-3.5 w-3.5" />}
+                      Alerta secundaria · {a.titulo}
+                    </span>
+                    <span className="text-[10px] uppercase">
+                      {a.nivel} · {a.valor}
+                      {a.unidad}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 leading-snug text-slate-200">{a.texto}</p>
+                  <p className="mt-0.5 font-semibold">{a.recomendacion}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Comparador explícito GFS 27 km vs INTI-3K en la celda crítica */}
+          {analysis.comparador && (
+            <div className="rounded-xl border border-amber-400/40 bg-gradient-to-br from-amber-950/50 to-slate-900/90 p-3">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                Lo que el GFS 27 km no ve · tu celda 3 km
+              </div>
+              <div className="mt-1.5 flex items-end justify-between gap-2">
+                <div>
+                  <div className="text-[10px] text-slate-400">GFS 27 km decía</div>
+                  <div className="text-xl font-bold text-amber-300">{analysis.comparador.gfs_27km_c}°C</div>
+                </div>
+                <div className="pb-1 text-slate-500">→</div>
+                <div className="text-right">
+                  <div className="text-[10px] text-slate-400">INTI-3K dice</div>
+                  <div className="text-xl font-bold text-sky-300">{analysis.comparador.inti3k_c}°C</div>
+                </div>
+              </div>
+              <p className="mt-1.5 text-[11px] leading-snug text-slate-200">{analysis.comparador.texto}</p>
+              <p className="mt-1 text-[10px] font-semibold text-amber-200">{analysis.comparador.veredicto}</p>
+              <div className="mt-1 text-[9px] text-slate-500">
+                Celda fila {analysis.comparador.cell.row} · col {analysis.comparador.cell.col} de la grilla 70×35 ·{" "}
+                {analysis.comparador.metodo_gfs}
+              </div>
+            </div>
+          )}
 
           {/* Grid KPIs 3 km vs GFS 27 km */}
           <div className="grid grid-cols-2 gap-2 text-xs">
             <div className="rounded-lg border border-slate-800 bg-slate-900/90 p-2.5">
-              <div className="text-[10px] text-slate-400">Temp. Mínima 3 km</div>
+              <div className="text-[10px] text-slate-400">Temp. Mínima 3 km ({analysis.kpis.hora_tmin_lima})</div>
               <div className="mt-0.5 text-lg font-bold text-sky-300">
                 {analysis.kpis.tmin_c}°C{" "}
                 <span className="text-[11px] font-normal text-slate-400">/ {analysis.kpis.tmax_c}°C</span>
               </div>
               <div className="text-[10px] text-slate-400">
-                GFS 27 km decía: <strong className="text-amber-300">{analysis.kpis.gfs_27km_tmin_c}°C</strong> (Δ{" "}
+                Mín. GFS 27 km en la zona: <strong className="text-amber-300">{analysis.kpis.gfs_27km_tmin_c}°C</strong> (Δ{" "}
                 {analysis.kpis.delta_resolucion_c}°C)
               </div>
             </div>
@@ -134,9 +191,13 @@ export default function DecisionSidebar({
             </div>
 
             <div className="rounded-lg border border-slate-800 bg-slate-900/90 p-2">
-              <div className="text-[10px] text-slate-400">Exposición Helada (&lt;0°C)</div>
+              <div className="text-[10px] text-slate-400">Exposición Helada (&lt;0°C, celdas 3 km)</div>
               <div className="text-sm font-bold text-cyan-300">
                 {analysis.kpis.frost_hours}h · {analysis.kpis.cells_with_frost}/{analysis.cells_3km_count} celdas
+              </div>
+              <div className="text-[9px] text-slate-500">
+                {analysis.kpis.frost_cell_hours} celda·h · celda más fría {analysis.kpis.frost_hours_worst_cell}h · GFS{" "}
+                {analysis.kpis.frost_hours_gfs}h
               </div>
             </div>
 
@@ -252,27 +313,28 @@ export default function DecisionSidebar({
           {/* Serie horaria compacta */}
           <div className="rounded-lg border border-slate-800 bg-slate-900/90 p-2.5">
             <div className="text-[10px] font-bold uppercase text-slate-400 mb-1.5">
-              Evolución Horaria (Hora Lima UTC−5)
+              Evolución Horaria (hora Perú, UTC−5) · celda crítica ({analysis.comparador?.cell.lat},{" "}
+              {analysis.comparador?.cell.lon})
             </div>
             <div className="max-h-40 overflow-y-auto text-[10px]">
               <table className="w-full text-left">
                 <thead className="text-slate-400 border-b border-slate-800">
                   <tr>
                     <th className="py-1">Hora</th>
-                    <th>IA 3km</th>
-                    <th>GFS 27km</th>
+                    <th>INTI-3K celda</th>
+                    <th>GFS 27km celda</th>
                     <th>RH</th>
                     <th>Viento</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {analysis.hourly_series.slice(0, 24).map((h) => (
+                  {analysis.hourly_series.slice(0, 48).map((h) => (
                     <tr key={h.time_utc} className="border-b border-slate-800/60">
                       <td className="py-1 font-medium text-slate-300">{h.time_lima}</td>
-                      <td className={h.temp_min_c <= 0 ? "font-bold text-sky-300" : "text-slate-100"}>
-                        {h.temp_min_c}°C
+                      <td className={h.temp_cell_c < 0 ? "font-bold text-sky-300" : "text-slate-100"}>
+                        {h.temp_cell_c}°C
                       </td>
-                      <td className="text-slate-400">{h.temp_gfs_27km_c}°C</td>
+                      <td className="text-slate-400">{h.temp_gfs_cell_c}°C</td>
                       <td>{h.rh_min_pct}%</td>
                       <td>{h.wind_max_ms} m/s</td>
                     </tr>

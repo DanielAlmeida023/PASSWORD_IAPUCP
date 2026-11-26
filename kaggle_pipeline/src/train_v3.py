@@ -40,10 +40,7 @@ from train import (
     SEBlock,
 )
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = ROOT_DIR / "data"
-MODELS_DIR = ROOT_DIR / "models"
-EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent / "experiments"
+from paths import ROOT_DIR, DATA_DIR, MODELS_DIR, EXPERIMENTS_DIR  # env PASSWORD_DATA_DIR / PASSWORD_OUT_DIR
 
 CENTERED_LAGS = (-6, -3, -1, 0, 1, 3, 6)
 

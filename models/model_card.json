@@ -1,0 +1,51 @@
+{
+  "name": "EnsembleV8 Full-DirectRes",
+  "short_name": "EnsembleV8",
+  "arch": "ensemble_v8",
+  "exp_id": "ensemble_v8_full_directres",
+  "commit": "be6b48b",
+  "commit_full": "be6b48b237def68b7b1f0f839b966130fb344b80",
+  "task": "Downscaling GFS 27 km (17x13) -> WRF 3 km (70x35) de RH, T, U, V · Cordillera Blanca / Callejón de Huaylas",
+  "training_code": "kaggle_pipeline/src/train_v8.py (+ train_v7.py para features) · reproducible en train/submission_notebook.ipynb",
+  "inputs": {
+    "lags_h": [-24, -6, -3, -1, 0, 1, 3, 6, 24],
+    "extra_features": ["M24 (media 24 h)", "S24 (std 24 h)", "gradientes dT/dRH, divergencia, vorticidad", "punto de rocío Magnus", "hora UTC (sin/cos)"],
+    "time_reference": "UTC"
+  },
+  "validation": {
+    "skill_score": 0.4100,
+    "skill_score_exact": 0.40996,
+    "fold": "holdout temporal 2024-06-16 a 2024-06-30",
+    "metric": "skill = media por variable de (1 - RMSE / RMSE climatología horaria)",
+    "rmse_per_var": {"RH": 8.4225, "T": 0.831, "U": 1.5638, "V": 1.4875},
+    "skill_per_var": {"RH": 0.5097, "T": 0.5865, "U": 0.3082, "V": 0.2354}
+  },
+  "kaggle": {
+    "public_lb": 0.49844,
+    "public_lb_rank": 4
+  },
+  "members": [
+    {"name": "DirectResConvNeXtV8", "width": 84, "params": 849775},
+    {"name": "DirectResMultiScaleV8", "width": 96, "params": 1064095},
+    {"name": "DirectResUNetV8", "width": 64, "params": 2375359},
+    {"name": "DirectResFNOV8", "width": 32, "params": 1452223}
+  ],
+  "blend_weights_order": ["ConvNeXt", "MultiScale", "UNet", "FNO"],
+  "blend_weights_per_var": {
+    "RH": [0.10, 0.45, 0.10, 0.35],
+    "T": [0.20, 0.30, 0.35, 0.15],
+    "U": [0.10, 0.20, 0.50, 0.20],
+    "V": [0.20, 0.15, 0.45, 0.20]
+  },
+  "total_params": 5741468,
+  "weights": {
+    "path": "models/modelo.pt",
+    "size_bytes": 23112355,
+    "size_mb": 23.11,
+    "sha256": "8a4ec8d1fb65ea42da323274825d4b7900689d1b31666efeda169377e5e9a87e"
+  },
+  "norm_stats": {
+    "path": "models/norm_stats.npz",
+    "sha256": "ff0a66c49463477c7470c3fb0e3625ed79af794c310e126f831550a707293a20"
+  }
+}

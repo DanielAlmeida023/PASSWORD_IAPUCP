@@ -37,7 +37,10 @@ AGENTS.md
 .agents/
 docs/
 kaggle_pipeline/data/
-kaggle_pipeline/experiments/
+# Se ignora el CONTENIDO (no la carpeta) para poder re-incluir el registro único de experimentos.
+# Los OOF (experiments/oof/*.npy), refit/ y submissions/ siguen ignorados.
+kaggle_pipeline/experiments/*
+!kaggle_pipeline/experiments/registro.csv
 kaggle_pipeline/src/cv_strategy.py
 
 # Credenciales locales (Jamás subir tokens de Kaggle ni .env)
@@ -46,3 +49,9 @@ access_token
 .kaggle/
 .env
 .env.local
+kaggle_runner/outputs/
+local_runs/
+models_candidates/
+
+# Envíos (pesados; se comparten aparte)
+submissions/*.csv

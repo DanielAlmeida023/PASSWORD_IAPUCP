@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import numpy as np
 
-EXPERIMENTS_DIR = Path(__file__).resolve().parent.parent / "experiments"
+from paths import EXPERIMENTS_DIR  # env PASSWORD_OUT_DIR
 LOG_CSV_PATH = EXPERIMENTS_DIR / "experiments_log.csv"
 
 CSV_HEADERS = [

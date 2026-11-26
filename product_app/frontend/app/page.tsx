@@ -13,6 +13,8 @@ import type {
   FiresFirmsResponse,
   GeometryAnalysisResponse,
   GridForecastResponse,
+  HistoricalCase,
+  ModelInfo,
   OpticMode,
 } from "../types/inti3k";
 
@@ -20,6 +22,8 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function Inti3kCommandCenter() {
   const [gridData, setGridData] = useState<GridForecastResponse | null>(null);
+  const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
+  const [historicalCases, setHistoricalCases] = useState<HistoricalCase[]>([]);
   const [infrastructure, setInfrastructure] = useState<GeoJSON.FeatureCollection | null>(null);
   const [hotspots, setHotspots] = useState<FireHotspot[]>([]);
   const [firesBadge, setFiresBadge] = useState<string>("");
@@ -97,6 +101,7 @@ export default function Inti3kCommandCenter() {
             fire_risk_max: data.kpis.fire_risk_max,
             actionable_status: data.actionable_status,
             area_km2: data.area_km2,
+            comparador_texto: data.comparador?.texto ?? null,
           }),
         });
         if (bRes.ok) {
@@ -125,7 +130,15 @@ export default function Inti3kCommandCenter() {
           fetch(`${API_BASE}/api/infrastructure`),
           fetch(`${API_BASE}/api/fires-firms`),
         ]);
-        if (!gridRes.ok) throw new Error("No se pudo cargar /api/grid-forecast. Verifica el backend en :8000.");
+        if (!gridRes.ok) {
+          let detail = "";
+          try {
+            detail = (await gridRes.json())?.detail ?? "";
+          } catch {
+            // sin cuerpo JSON
+          }
+          throw new Error(`No se pudo cargar el pronóstico (${gridRes.status}). ${detail || "Verifica el backend en :8000."}`);
+        }
         const gridJson: GridForecastResponse = await gridRes.json();
         setGridData(gridJson);
         setHourIdx(0);
@@ -142,6 +155,18 @@ export default function Inti3kCommandCenter() {
     },
     []
   );
+
+  // Ficha del modelo (badge dinámico) y casos históricos: una sola vez
+  useEffect(() => {
+    fetch(`${API_BASE}/api/model-info`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j && setModelInfo(j))
+      .catch(() => undefined);
+    fetch(`${API_BASE}/api/historical-cases`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j && setHistoricalCases(j.cases ?? []))
+      .catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     loadGridAndContext(forecastHours, historicalDate);
@@ -302,6 +327,7 @@ export default function Inti3kCommandCenter() {
 
       <TacticalHUD
         gridData={gridData}
+        modelInfo={modelInfo}
         opticMode={opticMode}
         compareGfs={compareGfs}
         drawMode={drawMode}
@@ -360,6 +386,7 @@ export default function Inti3kCommandCenter() {
         playSpeed={playSpeed}
         forecastHours={forecastHours}
         historicalDate={historicalDate}
+        historicalCases={historicalCases}
         hudVisible={hudVisible}
         onChangeHour={setHourIdx}
         onTogglePlay={() => setIsPlaying((p) => !p)}

@@ -72,6 +72,15 @@ def predecir(Xw, static, times=None):
         arch = str(stats["arch"])
         width = int(stats["width"])
 
+        if arch == "ensemble_v8":
+            # Modelo final de Kaggle: inferencia compartida con el backend (mismo preprocesamiento
+            # que el entrenamiento, lags ±24 h). Ver app/inti_inference.py.
+            from inti_inference import predict_sequence
+
+            X_seq = Xw[:, -1]
+            t_seq = times if times is not None else np.array([f"20260101{i%24:02d}" for i in range(len(X_seq))])
+            return predict_sequence(X_seq, t_seq, static)
+
         grid_t = build_sampling_grid(static, device)
         dem = static["dem"].astype(np.float32)
 
@@ -305,9 +314,14 @@ def main():
     if a.desde:
         X, times = get_gfs_forecast(start_date=a.desde, end_date=a.hasta or a.desde)
     else:
-        X, times = get_gfs_forecast(forecast_hours=a.horas, cache_path=str(APP / "gfs_cache.npz"))
+        # past_hours=24 y +24 h extra: el modelo usa lags t-24 .. t+24 (V7_LAGS)
+        X, times = get_gfs_forecast(forecast_hours=a.horas + 24, past_hours=24,
+                                    cache_path=str(APP / "gfs_cache.npz"))
     Xw, times = make_windows(X, times)
     Y = predecir(Xw, static, times=times)
+    if not a.desde:   # mostrar sólo las horas futuras pedidas (las extra sirven de contexto a los lags)
+        sel = slice(24, 24 + a.horas)
+        Y, times = Y[sel], times[sel]
     assert Y.shape[1:] == (70, 35, 4), f"predecir() debe devolver (N, 70, 35, 4), devolvió {Y.shape}"
 
     tmin, hora_min, helada = alerta_heladas(Y, times)
