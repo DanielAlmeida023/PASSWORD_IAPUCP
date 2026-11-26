@@ -31,7 +31,7 @@ Objetivo: **subir al puesto 1 del leaderboard privado** y **entregar todo lo obl
 - Lags futuros (t+1..t+24): las bases solo describen la entrada t−2..t. **Pendiente de confirmar en el grupo de participantes.** Plan B listo: `--lags past` (lags causales `(-24,-6,-3,-1,0,-2,-12,-9,-18)`, ventana M24/S24 causal). Si la organización lo prohíbe, TODO el ensamble final debe re-entrenarse con `--lags past`.
 
 ## 3. Estado al 26 nov 2026, 15:20 (Lima)
-LB público: 1.º SciTeX 0.51938 · 2.º 0.51030 · 3.º 0.50912 · 4.º 0.50570 · **PASSWORD ≈ 0.50029** (mejor envío). Brecha al 1.º ≈ +0.019.
+LB público: 1.º SciTeX 0.51938 · 2.º 0.51030 · 3.º 0.50912 · 4.º 0.50570 · **PASSWORD 0.50419** (vn6, mejor envío). Brecha al 1.º ≈ +0.015.
 
 | Experimento | cv_media | LB público | Nota |
 |---|---|---|---|
@@ -44,7 +44,7 @@ LB público: 1.º SciTeX 0.51938 · 2.º 0.51030 · 3.º 0.50912 · 4.º 0.50570
 | UNet loss U,V ×1.3 | 0.3854 | — | DESCARTADO |
 | UNet pesos por recencia "plan" | 0.3864 | — | DESCARTADO (pero fold3 0.3936 ↑) |
 | Blend 4 (cnx42, ms102, ms777, unet42) uniforme | 0.4060 | **0.50029** | envío actual |
-| Blend 6 (+unet203, +fno304) uniforme | **0.4091** | pendiente de enviar | **listo**: `submissions/sub_20261126_vn6_uniform_cv0.4091.csv`, modelo en `models_candidates/vn6/` (36 MB) |
+| Blend 6 (+unet203, +fno304) uniforme | **0.4091** | **0.50419** | **listo**: `submissions/sub_20261126_vn6_uniform_cv0.4091.csv`, modelo en `models_candidates/vn6/` (36 MB) |
 | EnsembleV8 viejo (blend uniforme) | — | 0.49976 | calibración |
 | EnsembleV8 viejo (blend optimizado) | 0.4100* | 0.49844 | *optimista (época elegida en val) |
 | EnsembleV8 sin FNO | — | 0.49464 | el FNO aporta |
@@ -56,7 +56,7 @@ Cola Kaggle que quedó pendiente (`kaggle_runner/jobs.txt`, el scheduler la rean
 Mejoras de viento YA implementadas en la rama (apagadas por defecto, default bit-idéntico, 58+14 tests OK): flags de `run_cv.py` `--topo-extra` (9 canales del DEM: TPI k=21, curvatura k=3/9, aspecto sin/cos, pendiente a lo largo/transversal al eje del valle estimado por PCA del DEM ≈ 334°, distancia al eje) y `--wind-head` (cabeza U/V con 2 bloques residuales dilatados). Export/producto ya las reconstruyen (`members_config`). **Aún NO medidas en GPU.** Estudio offline (`kaggle_pipeline/src/wind_study.py`, resultados en `experiments/wind_study.json`): el error de U/V no es sesgo (|sesgo| ≤ 0.12 m/s) sino predicción **demasiado suave** (std pred 2.2–2.6 vs real 2.5–2.9), peor en fondos de valle (decil TPI más bajo: skill 0.13–0.18) y de 03z a 12z (noche local). Las correcciones post-hoc (sesgo por hora, a·y+b) **no pasan** el umbral (máx +0.0006) → descartadas. Ideas que atacan la suavidad: pérdida con término de gradiente espacial o de varianza para U/V, cabeza de viento, features de valle.
 
 ## 4. Plan para llegar al puesto 1 (en orden de ganancia esperada / costo)
-1. **Envío del blend de 6** (cv 0.4091): el CSV ya está generado (pedir OK y subir). Comando de referencia por si hay que regenerarlo:
+1. **Blend de 6 YA ENVIADO** (cv 0.4091 → LB 0.50419; CV y LB suben juntos: 0.4060→0.50029, 0.4091→0.50419). Su modelo está en `models_candidates/vn6/`. Comando de referencia:
    `python kaggle_pipeline/src/export_ensemble.py --members convnext_42 multiscale_102 multiscale_777 unet_42 unet_203 fno_304 --blend uniform --refit-dir kaggle_pipeline/experiments/refit --out models_candidates/vn6 --sub-dir submissions --id-exp vn6_uniform --cv-media 0.4091 --device cpu` → pedir OK → `kaggle competitions submit ...` → registrar LB.
 2. **Más semillas y diversidad** (casi seguro +0.003 a +0.008): CV + refit de UNet s777/s1234, ConvNeXt s777/s1234, MultiScale s42, FNO s42/s777 (modes 12×8 original). Medir siempre con `blend.py --members ... --shrink 0.3 1.0` (mira la línea NESTED/uniforme). Parar cuando agregar miembros suba < +0.001. Vigilar tamaño: 10–12 miembros ≈ 60 MB fp32 (export guarda fp16 si > 95 MB).
 3. **Viento (la plata para el 1.º):** primero lanzar las 4 líneas `cv-unet-topox-*`/`cv-unet-wh-*` que ya están en `jobs.txt` y comparar contra `unet_42` (0.3878) **y** `unet_203` (0.3854) — exigir mejora en ambas semillas. Luego medir contra UNet s42 (misma semilla, 24 épocas) cada opción: features topográficas extra, cabeza de viento, y corrección de sesgo/amplitud por hora UTC×variable estimada anidada en OOF (solo escalares, nunca por píxel). Quedarse con lo que suba cv_media ≥ +0.002 en los 3 folds. Ideas extra si sobra tiempo: pesos por recencia suaves (fold3 sugiere que ayudan al periodo seco del test), SWA en el último 25 % de épocas, `noise_std ∈ {0.03, 0.06}`, stacker CNN pequeño sobre OOF (solo si +0.004).
